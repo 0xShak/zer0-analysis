@@ -1,0 +1,510 @@
+// Hand-rolled Supabase types matching supabase/migrations/0001_initial.sql.
+// Regenerate after applying the migration:
+//   supabase gen types typescript --linked > src/lib/database.types.ts
+
+export type Json =
+  | string
+  | number
+  | boolean
+  | null
+  | { [key: string]: Json | undefined }
+  | Json[];
+
+export type Database = {
+  public: {
+    Tables: {
+      users: {
+        Row: {
+          id: string;
+          wallet_address: string | null;
+          telegram_user_id: number | null;
+          display_name: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          wallet_address?: string | null;
+          telegram_user_id?: number | null;
+          display_name?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          wallet_address?: string | null;
+          telegram_user_id?: number | null;
+          display_name?: string | null;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
+      sessions: {
+        Row: {
+          id: string;
+          user_id: string | null;
+          anon_fingerprint: string | null;
+          channel: 'web' | 'telegram';
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          user_id?: string | null;
+          anon_fingerprint?: string | null;
+          channel: 'web' | 'telegram';
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          user_id?: string | null;
+          anon_fingerprint?: string | null;
+          channel?: 'web' | 'telegram';
+          created_at?: string;
+        };
+        Relationships: [];
+      };
+      messages: {
+        Row: {
+          id: number;
+          session_id: string | null;
+          user_id: string | null;
+          role: 'user' | 'assistant' | 'system';
+          channel: string;
+          content: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: number;
+          session_id?: string | null;
+          user_id?: string | null;
+          role: 'user' | 'assistant' | 'system';
+          channel: string;
+          content: string;
+          created_at?: string;
+        };
+        Update: {
+          id?: number;
+          session_id?: string | null;
+          user_id?: string | null;
+          role?: 'user' | 'assistant' | 'system';
+          channel?: string;
+          content?: string;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
+      thoughts: {
+        Row: {
+          id: number;
+          market_condition_id: string | null;
+          scope: 'public' | 'app';
+          content: string;
+          tokens_in: number | null;
+          tokens_out: number | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: number;
+          market_condition_id?: string | null;
+          scope: 'public' | 'app';
+          content: string;
+          tokens_in?: number | null;
+          tokens_out?: number | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: number;
+          market_condition_id?: string | null;
+          scope?: 'public' | 'app';
+          content?: string;
+          tokens_in?: number | null;
+          tokens_out?: number | null;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
+      trade_recommendations: {
+        Row: {
+          id: string;
+          market_condition_id: string;
+          market_question: string | null;
+          token_id: string;
+          side: 'BUY' | 'SELL';
+          price: number;
+          size: number;
+          conviction: number;
+          rationale: string;
+          neg_risk: boolean;
+          status: string;
+          created_at: string;
+          expires_at: string | null;
+        };
+        Insert: {
+          id?: string;
+          market_condition_id: string;
+          market_question?: string | null;
+          token_id: string;
+          side: 'BUY' | 'SELL';
+          price: number;
+          size: number;
+          conviction: number;
+          rationale: string;
+          neg_risk?: boolean;
+          status?: string;
+          created_at?: string;
+          expires_at?: string | null;
+        };
+        Update: {
+          id?: string;
+          market_condition_id?: string;
+          market_question?: string | null;
+          token_id?: string;
+          side?: 'BUY' | 'SELL';
+          price?: number;
+          size?: number;
+          conviction?: number;
+          rationale?: string;
+          neg_risk?: boolean;
+          status?: string;
+          created_at?: string;
+          expires_at?: string | null;
+        };
+        Relationships: [];
+      };
+      entitlements: {
+        Row: {
+          id: string;
+          user_id: string | null;
+          session_id: string | null;
+          unlocked_until: string;
+          source: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          user_id?: string | null;
+          session_id?: string | null;
+          unlocked_until: string;
+          source: string;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          user_id?: string | null;
+          session_id?: string | null;
+          unlocked_until?: string;
+          source?: string;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
+      payments: {
+        Row: {
+          id: string;
+          user_id: string | null;
+          session_id: string | null;
+          coinbase_charge_id: string | null;
+          status: string | null;
+          amount_usd: number | null;
+          created_at: string;
+          confirmed_at: string | null;
+        };
+        Insert: {
+          id?: string;
+          user_id?: string | null;
+          session_id?: string | null;
+          coinbase_charge_id?: string | null;
+          status?: string | null;
+          amount_usd?: number | null;
+          created_at?: string;
+          confirmed_at?: string | null;
+        };
+        Update: {
+          id?: string;
+          user_id?: string | null;
+          session_id?: string | null;
+          coinbase_charge_id?: string | null;
+          status?: string | null;
+          amount_usd?: number | null;
+          created_at?: string;
+          confirmed_at?: string | null;
+        };
+        Relationships: [];
+      };
+      rate_limits: {
+        Row: { fingerprint: string; day: string; count: number };
+        Insert: { fingerprint: string; day?: string; count?: number };
+        Update: { fingerprint?: string; day?: string; count?: number };
+        Relationships: [];
+      };
+      market_scans: {
+        Row: {
+          condition_id: string;
+          question: string | null;
+          last_seen_at: string;
+          deterministic: boolean | null;
+          category: string | null;
+          classifier_confidence: number | null;
+          classifier_reason: string | null;
+          last_analyzed_at: string | null;
+          last_analyzed_yes_price: number | null;
+        };
+        Insert: {
+          condition_id: string;
+          question?: string | null;
+          last_seen_at?: string;
+          deterministic?: boolean | null;
+          category?: string | null;
+          classifier_confidence?: number | null;
+          classifier_reason?: string | null;
+          last_analyzed_at?: string | null;
+          last_analyzed_yes_price?: number | null;
+        };
+        Update: {
+          condition_id?: string;
+          question?: string | null;
+          last_seen_at?: string;
+          deterministic?: boolean | null;
+          category?: string | null;
+          classifier_confidence?: number | null;
+          classifier_reason?: string | null;
+          last_analyzed_at?: string | null;
+          last_analyzed_yes_price?: number | null;
+        };
+        Relationships: [];
+      };
+      inbound_messages: {
+        Row: {
+          id: number;
+          channel: 'web' | 'telegram';
+          session_id: string | null;
+          user_id: string | null;
+          content: string;
+          processed_at: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: number;
+          channel: 'web' | 'telegram';
+          session_id?: string | null;
+          user_id?: string | null;
+          content: string;
+          processed_at?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: number;
+          channel?: 'web' | 'telegram';
+          session_id?: string | null;
+          user_id?: string | null;
+          content?: string;
+          processed_at?: string | null;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
+      agent_usage: {
+        Row: {
+          id: number;
+          provider: string;
+          model: string;
+          tokens_in: number;
+          tokens_out: number;
+          cached_tokens: number;
+          cost_usd: number;
+          step: string | null;
+          brain_tick_id: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: number;
+          provider: string;
+          model: string;
+          tokens_in: number;
+          tokens_out: number;
+          cached_tokens?: number;
+          cost_usd: number;
+          step?: string | null;
+          brain_tick_id?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: number;
+          provider?: string;
+          model?: string;
+          tokens_in?: number;
+          tokens_out?: number;
+          cached_tokens?: number;
+          cost_usd?: number;
+          step?: string | null;
+          brain_tick_id?: string | null;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
+      link_codes: {
+        Row: {
+          code: string;
+          session_id: string | null;
+          user_id: string | null;
+          created_at: string;
+          expires_at: string;
+          consumed_at: string | null;
+        };
+        Insert: {
+          code: string;
+          session_id?: string | null;
+          user_id?: string | null;
+          created_at?: string;
+          expires_at?: string;
+          consumed_at?: string | null;
+        };
+        Update: {
+          code?: string;
+          session_id?: string | null;
+          user_id?: string | null;
+          created_at?: string;
+          expires_at?: string;
+          consumed_at?: string | null;
+        };
+        Relationships: [];
+      };
+      outbound_messages: {
+        Row: {
+          id: number;
+          channel: 'web' | 'telegram';
+          session_id: string | null;
+          user_id: string | null;
+          telegram_chat_id: number | null;
+          content: string;
+          delivered_at: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: number;
+          channel: 'web' | 'telegram';
+          session_id?: string | null;
+          user_id?: string | null;
+          telegram_chat_id?: number | null;
+          content: string;
+          delivered_at?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: number;
+          channel?: 'web' | 'telegram';
+          session_id?: string | null;
+          user_id?: string | null;
+          telegram_chat_id?: number | null;
+          content?: string;
+          delivered_at?: string | null;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
+      trades: {
+        Row: {
+          id: string;
+          user_id: string | null;
+          session_id: string | null;
+          recommendation_id: string | null;
+          user_address: string;
+          market_condition_id: string;
+          token_id: string;
+          side: 'BUY' | 'SELL';
+          price: number;
+          size_usd: number;
+          signature_type: number;
+          order_payload: Json | null;
+          signed_order: Json | null;
+          status:
+            | 'pending'
+            | 'prepared'
+            | 'submitted'
+            | 'accepted'
+            | 'rejected'
+            | 'filled'
+            | 'cancelled'
+            | 'failed';
+          clob_order_id: string | null;
+          failure_reason: string | null;
+          prepared_at: string;
+          submitted_at: string | null;
+          accepted_at: string | null;
+          filled_at: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          user_id?: string | null;
+          session_id?: string | null;
+          recommendation_id?: string | null;
+          user_address: string;
+          market_condition_id: string;
+          token_id: string;
+          side: 'BUY' | 'SELL';
+          price: number;
+          size_usd: number;
+          signature_type: number;
+          order_payload?: Json | null;
+          signed_order?: Json | null;
+          status?:
+            | 'pending'
+            | 'prepared'
+            | 'submitted'
+            | 'accepted'
+            | 'rejected'
+            | 'filled'
+            | 'cancelled'
+            | 'failed';
+          clob_order_id?: string | null;
+          failure_reason?: string | null;
+          prepared_at?: string;
+          submitted_at?: string | null;
+          accepted_at?: string | null;
+          filled_at?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          user_id?: string | null;
+          session_id?: string | null;
+          recommendation_id?: string | null;
+          user_address?: string;
+          market_condition_id?: string;
+          token_id?: string;
+          side?: 'BUY' | 'SELL';
+          price?: number;
+          size_usd?: number;
+          signature_type?: number;
+          order_payload?: Json | null;
+          signed_order?: Json | null;
+          status?:
+            | 'pending'
+            | 'prepared'
+            | 'submitted'
+            | 'accepted'
+            | 'rejected'
+            | 'filled'
+            | 'cancelled'
+            | 'failed';
+          clob_order_id?: string | null;
+          failure_reason?: string | null;
+          prepared_at?: string;
+          submitted_at?: string | null;
+          accepted_at?: string | null;
+          filled_at?: string | null;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
+    };
+    Views: Record<string, never>;
+    Functions: {
+      increment_rate_limit: {
+        Args: { fp: string; today: string };
+        Returns: { fingerprint: string; day: string; count: number };
+      };
+    };
+    Enums: Record<string, never>;
+    CompositeTypes: Record<string, never>;
+  };
+};

@@ -1,0 +1,41 @@
+{
+  "name": "zer0-backend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint"
+  },
+  "dependencies": {
+    "@polymarket/clob-client": "^5.8.1",
+    "@supabase/ssr": "^0.10.3",
+    "@supabase/supabase-js": "^2.106.0",
+    "@types/ws": "^8.18.1",
+    "coinbase-commerce-node": "^1.0.4",
+    "ethers": "^5.8.0",
+    "grammy": "^1.43.0",
+    "groq-sdk": "^1.2.0",
+    "inngest": "^4.4.0",
+    "next": "16.2.6",
+    "openai": "^6.38.0",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "viem": "^2.50.3",
+    "ws": "^8.20.1",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/coinbase-commerce-node": "^1.0.9",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.2.6",
+    "tailwindcss": "^4",
+    "tsx": "^4.22.3",
+    "typescript": "^5"
+  }
+}

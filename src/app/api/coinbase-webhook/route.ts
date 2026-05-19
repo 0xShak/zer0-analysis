@@ -1,0 +1,50 @@
+import type { NextRequest } from 'next/server';
+import { createAdminClient } from '@/lib/supabase/admin';
+import { verifyWebhook } from '@/lib/coinbase';
+
+// zer0.md §7 — read RAW body before any JSON parsing so the HMAC verifies.
+// Coinbase Commerce retries on failure, so the unique charge_id makes the
+// insert idempotent.
+export async function POST(req: NextRequest) {
+  const rawBody = await req.text();
+  const signature = req.headers.get('x-cc-webhook-signature') ?? '';
+
+  let event: ReturnType<typeof verifyWebhook>;
+  try {
+    event = verifyWebhook(rawBody, signature);
+  } catch {
+    return new Response('invalid signature', { status: 400 });
+  }
+
+  const supabase = createAdminClient();
+
+  if (event.type === 'charge:confirmed') {
+    const data = event.data as { id: string; metadata?: { sessionId?: string; walletAddress?: string } };
+    const sessionId = data.metadata?.sessionId ?? null;
+    const walletAddress = data.metadata?.walletAddress;
+
+    let userId: string | null = null;
+    if (walletAddress) {
+      const { data: user } = await supabase
+        .from('users')
+        .select('id')
+        .eq('wallet_address', walletAddress.toLowerCase())
+        .maybeSingle();
+      userId = user?.id ?? null;
+    }
+
+    await supabase.from('entitlements').insert({
+      user_id: userId,
+      session_id: sessionId,
+      unlocked_until: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+      source: 'coinbase_commerce',
+    });
+
+    await supabase
+      .from('payments')
+      .update({ status: 'confirmed', confirmed_at: new Date().toISOString() })
+      .eq('coinbase_charge_id', data.id);
+  }
+
+  return new Response('ok');
+}

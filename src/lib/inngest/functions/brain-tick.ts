@@ -1,0 +1,504 @@
+import { cron } from 'inngest';
+import { inngest } from '../client';
+import { createAdminClient } from '../../supabase/admin';
+import { fetchTradableMarkets, passesNumericFilter, type GammaMarket } from '../../polymarket/gamma';
+import { getGroq, GROQ_MODELS } from '../../groq';
+import { analyzeCandidate } from '../../agents/deep-analyzer';
+import { summarizeScan, summarizeSkip, summarizeTradeSignal } from '../../groq/summarize';
+import { logUsage } from '../../cost/log';
+import { isUnderDailyBudget } from '../../cost/budget';
+import { computeCost } from '../../cost/openai-pricing';
+import { ANALYZER_MODEL } from '../../openai/client';
+
+type ClassifiedCandidate = GammaMarket & {
+  deterministic: boolean;
+  confidence: number;
+  reason: string;
+  category: string;
+};
+
+// Yes side is conventionally outcomes[0] on Polymarket binary markets. Fall
+// back to a name match so a future ordering swap doesn't silently flip the
+// reference price.
+function yesPrice(m: GammaMarket): number {
+  const idx = m.outcomes.findIndex((o) => o?.toLowerCase() === 'yes');
+  const i = idx >= 0 ? idx : 0;
+  const raw = m.outcomePrices[i];
+  const n = parseFloat(raw ?? '');
+  return Number.isFinite(n) ? n : 0;
+}
+
+// zer0.md §1 + §13 Day 1/2 — runs every 2 min, drives the public CoT stream.
+//   step 1: fetch Gamma /markets
+//   step 2: dedupe vs market_scans
+//   step 3: classify deterministic (Groq Llama 3.1 8B)
+//   step 4: persist classifier output
+//   step 5: emit public summary of the scan
+//   step 6: budget guard
+//   step 7: deep analysis on top 5 deterministic (OpenAI gpt-5.5-pro by default)
+//   step 8: insert trade_recommendations when conviction > 0.65 and validation passes
+export const brainTick = inngest.createFunction(
+  {
+    id: 'zer0-brain-tick',
+    name: 'ZER0 brain tick',
+    triggers: [cron('*/2 * * * *')],
+  },
+  async ({ step, logger }) => {
+    const supabase = createAdminClient();
+    // Tick id anchored to a 2-minute UTC window so retries of the same
+    // cron firing get the same id in agent_usage.brain_tick_id.
+    const tickId = `tick-${Math.floor(Date.now() / 120_000) * 120_000}`;
+
+    const scanResult = await step.run('scan-markets', async () => {
+      // Gamma's /markets endpoint paginates at limit=100. One page covers
+      // far too little of the orderbook universe; walk up to 5 pages and
+      // hard-cap at 500 to stay inside Inngest step time budgets.
+      const PAGE_LIMIT = 100;
+      const MAX_PAGES = 5;
+      const HARD_CAP = 500;
+      const all: GammaMarket[] = [];
+      let pagesFetched = 0;
+      for (let i = 0; i < MAX_PAGES; i++) {
+        const offset = i * PAGE_LIMIT;
+        let page: GammaMarket[];
+        try {
+          page = await fetchTradableMarkets(PAGE_LIMIT, offset);
+        } catch (err) {
+          logger.warn(`gamma: page ${i} (offset=${offset}) fetch failed, breaking`, err);
+          break;
+        }
+        pagesFetched += 1;
+        all.push(...page);
+        if (all.length >= HARD_CAP) {
+          all.length = HARD_CAP;
+          break;
+        }
+        if (page.length < PAGE_LIMIT) break; // no more pages
+      }
+      const now = Date.now();
+      const windowStart = new Date(now + 60 * 60 * 1000).toISOString();
+      const windowEnd = new Date(now + 30 * 24 * 60 * 60 * 1000).toISOString();
+      const filtered = all.filter(passesNumericFilter);
+      return {
+        markets: filtered,
+        rawCount: all.length,
+        pagesFetched,
+        windowStart,
+        windowEnd,
+      };
+    });
+    const markets = scanResult.markets;
+    logger.info(
+      `gamma: ${markets.length} markets passed numeric filter (raw=${scanResult.rawCount}, pages=${scanResult.pagesFetched})`,
+    );
+
+    if (markets.length === 0) {
+      await step.run('emit-empty-scan-thought', async () => {
+        await supabase.from('thoughts').insert({
+          scope: 'app',
+          market_condition_id: null,
+          content: `scan-markets: fetched ${scanResult.rawCount} raw markets across ${scanResult.pagesFetched} pages, 0 passed numeric filter. Window: ${scanResult.windowStart} → ${scanResult.windowEnd}, min_liquidity: 5000, min_volume: 1000.`,
+          tokens_in: 0,
+          tokens_out: 0,
+        });
+      });
+    }
+
+    // Re-analyze if: never analyzed, OR last analysis is older than
+    // REANALYSIS_HOURS, OR Yes-price has moved >= REANALYSIS_PRICE_MOVE_PCT.
+    // Otherwise skip — this is what keeps brain-tick from re-burning OpenAI
+    // tokens on markets we already have a view on.
+    const reanalysisHours = parseFloat(process.env.REANALYSIS_HOURS ?? '6');
+    const reanalysisPriceMovePct = parseFloat(
+      process.env.REANALYSIS_PRICE_MOVE_PCT ?? '5',
+    );
+    const fresh = await step.run('dedupe', async () => {
+      if (markets.length === 0) return [] as GammaMarket[];
+      const ids = markets.map((m) => m.conditionId);
+      const { data: seen } = await supabase
+        .from('market_scans')
+        .select('condition_id, last_analyzed_at, last_analyzed_yes_price')
+        .in('condition_id', ids);
+      const seenMap = new Map(
+        (seen ?? []).map((r) => [r.condition_id, r] as const),
+      );
+      const now = Date.now();
+      const out: GammaMarket[] = [];
+      for (const m of markets) {
+        const prev = seenMap.get(m.conditionId);
+        if (!prev) {
+          out.push(m);
+          continue;
+        }
+        const hoursSinceAnalysis = prev.last_analyzed_at
+          ? (now - new Date(prev.last_analyzed_at).getTime()) / (1000 * 60 * 60)
+          : Infinity;
+        const prevPrice = prev.last_analyzed_yes_price;
+        const priceMovementPct =
+          prevPrice && prevPrice > 0
+            ? (Math.abs(yesPrice(m) - prevPrice) / prevPrice) * 100
+            : Infinity;
+        if (
+          hoursSinceAnalysis >= reanalysisHours ||
+          priceMovementPct >= reanalysisPriceMovePct
+        ) {
+          out.push(m);
+        }
+      }
+      return out;
+    });
+    logger.info(
+      `fresh: ${fresh.length} markets need (re)analysis ` +
+        `(hours>=${reanalysisHours} or price-move>=${reanalysisPriceMovePct}%)`,
+    );
+
+    const classified = await step.run('classify', async () => {
+      const groq = getGroq();
+      const out: ClassifiedCandidate[] = [];
+      for (const m of fresh.slice(0, 20)) {
+        const prompt = `Decide whether this Polymarket prediction market has a CLEAR, DETERMINISTIC resolution criterion.
+
+Market: ${m.question}
+Description: ${m.description ?? ''}
+Resolution source: ${m.resolutionSource ?? ''}
+Category: ${m.category ?? ''}
+
+Respond ONLY JSON: {"deterministic": boolean, "category": "sports|crypto_price|election|policy|other", "confidence": 0..1, "reason": "<one sentence>"}`;
+        try {
+          const resp = await groq.chat.completions.create({
+            model: GROQ_MODELS.CLASSIFIER,
+            messages: [{ role: 'user', content: prompt }],
+            response_format: { type: 'json_object' },
+            temperature: 0,
+          });
+          const json = JSON.parse(resp.choices[0]?.message?.content ?? '{}');
+          out.push({
+            ...m,
+            deterministic: !!json.deterministic,
+            confidence: typeof json.confidence === 'number' ? json.confidence : 0,
+            reason: json.reason ?? '',
+            category: json.category ?? 'other',
+          });
+          const tokens_in = resp.usage?.prompt_tokens ?? 0;
+          const tokens_out = resp.usage?.completion_tokens ?? 0;
+          await logUsage({
+            provider: 'groq',
+            model: GROQ_MODELS.CLASSIFIER,
+            tokens_in,
+            tokens_out,
+            cost_usd: computeCost(GROQ_MODELS.CLASSIFIER, { tokens_in, tokens_out }),
+            step: 'classify',
+            brain_tick_id: tickId,
+          });
+        } catch (err) {
+          logger.warn(`classify failed for ${m.conditionId}`, err);
+        }
+      }
+      return out;
+    });
+
+    await step.run('persist-scans', async () => {
+      if (classified.length === 0) return;
+      await supabase.from('market_scans').upsert(
+        classified.map((c) => ({
+          condition_id: c.conditionId,
+          question: c.question,
+          last_seen_at: new Date().toISOString(),
+          deterministic: c.deterministic,
+          category: c.category,
+          classifier_confidence: c.confidence,
+          classifier_reason: c.reason,
+        })),
+      );
+    });
+
+    await step.run('emit-scan-public-thought', async () => {
+      const deterministicCount = classified.filter((c) => c.deterministic).length;
+      const byCategory: Record<string, number> = {};
+      for (const c of classified) {
+        byCategory[c.category] = (byCategory[c.category] ?? 0) + 1;
+      }
+      const seenCount = Math.max(0, markets.length - fresh.length);
+      const summary = await summarizeScan({
+        rawCount: scanResult.rawCount,
+        pagesFetched: scanResult.pagesFetched,
+        passingFilter: markets.length,
+        freshCount: fresh.length,
+        seenCount,
+        deterministicCount,
+        byCategory,
+      });
+      await logUsage({
+        provider: 'groq',
+        model: summary.model,
+        tokens_in: summary.tokens_in,
+        tokens_out: summary.tokens_out,
+        cost_usd: summary.cost_usd,
+        step: 'scan-summary',
+        brain_tick_id: tickId,
+      });
+      const content =
+        summary.text ||
+        `ZER0 scanned ${markets.length} tradable markets — ${deterministicCount} look deterministic.`;
+      const { error } = await supabase.from('thoughts').insert({
+        scope: 'public',
+        content,
+        tokens_in: summary.tokens_in,
+        tokens_out: summary.tokens_out,
+      });
+      if (error) {
+        console.error('[brain-tick] scan-summary thought insert failed:', error);
+      }
+    });
+
+    // ─── Deep analysis (Day 2) ──────────────────────────────────────────────
+    // Select top 5 deterministic candidates by (confidence * normalised liquidity).
+    const candidates = classified.filter((c) => c.deterministic);
+    const maxLiq = candidates.reduce(
+      (m, c) => Math.max(m, parseFloat(c.liquidity ?? '0') || 0),
+      0,
+    );
+    const ranked = candidates
+      .map((c) => {
+        const liq = parseFloat(c.liquidity ?? '0') || 0;
+        const normLiq = maxLiq > 0 ? liq / maxLiq : 0.5;
+        return { c, score: c.confidence * normLiq };
+      })
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 5)
+      .map((r) => r.c);
+
+    if (ranked.length === 0) {
+      return { scanned: markets.length, fresh: fresh.length, classified: classified.length, analyzed: 0 };
+    }
+
+    // Budget guard — short-circuit when today's OpenAI spend hit the cap.
+    const budget = await step.run('budget-guard', async () => isUnderDailyBudget('openai'));
+    if (!budget.underBudget) {
+      await step.run('budget-paused-thought', async () => {
+        await supabase.from('thoughts').insert({
+          scope: 'app',
+          content: `Daily analyzer budget reached ($${budget.spentUsd.toFixed(2)} / $${budget.budgetUsd.toFixed(2)}). Pausing deep analysis until next UTC day.`,
+        });
+      });
+      return {
+        scanned: markets.length,
+        fresh: fresh.length,
+        classified: classified.length,
+        analyzed: 0,
+        budgetPaused: true,
+      };
+    }
+
+    let analyzed = 0;
+    let inserted = 0;
+
+    for (const cand of ranked) {
+      // Each candidate is its own Inngest step so a transient failure on
+      // one doesn't redo the OpenAI calls we already paid for.
+      const stepResult = await step.run(`analyze-${cand.conditionId}`, async () => {
+        // Pre-thought: announce what we're about to analyze.
+        const preThought = await supabase.from('thoughts').insert({
+          scope: 'app',
+          market_condition_id: cand.conditionId,
+          content: `Analyzing "${cand.question}" with ${ANALYZER_MODEL}. Liquidity $${parseFloat(cand.liquidity).toLocaleString()}, current outcomes ${cand.outcomePrices.join('/')}.`,
+        });
+        if (preThought.error) {
+          console.error('[deep-analyzer] pre-thought insert failed:', preThought.error);
+        }
+
+        const endMs = new Date(cand.endDate).getTime();
+        const hoursToRes = Number.isNaN(endMs)
+          ? 0
+          : Math.max(0, (endMs - Date.now()) / (1000 * 60 * 60));
+
+        const result = await analyzeCandidate({
+          conditionId: cand.conditionId,
+          question: cand.question,
+          description: cand.description,
+          resolutionSource: cand.resolutionSource,
+          category: cand.category,
+          outcomes: cand.outcomes,
+          current_prices: cand.outcomePrices.map((p) => parseFloat(p)),
+          liquidity_usd: parseFloat(cand.liquidity) || 0,
+          volume_24h_usd: cand.volumeNum ?? 0,
+          end_date: cand.endDate,
+          hours_to_resolution: hoursToRes,
+          token_ids: cand.clobTokenIds,
+        });
+
+        await logUsage({
+          provider: 'openai',
+          model: result.model,
+          tokens_in: result.tokens_in,
+          tokens_out: result.tokens_out,
+          cached_tokens: result.cached_tokens,
+          cost_usd: result.cost_usd,
+          step: 'deep-analyze',
+          brain_tick_id: tickId,
+        });
+
+        // Record that we ran deep-analyze on this market so dedupe can decide
+        // whether to re-analyze on a later tick. last_seen_at and the
+        // classifier columns were already written in persist-scans; this
+        // upsert overlays the two analysis-time columns without clobbering.
+        const analyzedYesPrice = yesPrice(cand);
+        const nowIso = new Date().toISOString();
+        const { error: upsertErr } = await supabase
+          .from('market_scans')
+          .upsert(
+            {
+              condition_id: cand.conditionId,
+              question: cand.question,
+              last_seen_at: nowIso,
+              last_analyzed_at: nowIso,
+              last_analyzed_yes_price: analyzedYesPrice,
+            },
+            { onConflict: 'condition_id' },
+          );
+        if (upsertErr) {
+          console.error('[brain-tick] market_scans analyze upsert failed:', upsertErr);
+        }
+
+        // Pull the model's raw rationale/side/conviction so we can preserve
+        // the full reasoning in the app stream even when the validator
+        // rejected the output (e.g. side=NONE). The json_schema guarantees
+        // the shape — we still defensively type-check.
+        const raw = (result.rawJson as Record<string, unknown> | null) ?? {};
+        const rawRationale = typeof raw.rationale === 'string' ? raw.rationale : '';
+        const rawSide =
+          raw.side === 'BUY' || raw.side === 'SELL' || raw.side === 'NONE'
+            ? raw.side
+            : 'NONE';
+        // Outcome categorisation drives both the app-thought wording and
+        // which public-summary voice we hand off to Groq.
+        let outcome: 'signal' | 'skip-none' | 'skip-low-conviction' | 'skip-rejected';
+        let appContent: string;
+        let skipReason = '';
+        if (result.validation.ok && result.validation.value.conviction > 0.65) {
+          const v = result.validation.value;
+          outcome = 'signal';
+          appContent = `Signal on "${cand.question}": ${v.side} @ ${v.suggested_price.toFixed(2)}, conviction ${v.conviction.toFixed(2)}. ${v.rationale}`;
+        } else if (result.validation.ok) {
+          const v = result.validation.value;
+          outcome = 'skip-low-conviction';
+          skipReason = `conviction ${v.conviction.toFixed(2)} below 0.65 threshold`;
+          appContent = `Considered "${cand.question}" but conviction ${v.conviction.toFixed(2)} below 0.65 threshold. ${v.rationale}`;
+        } else if (rawSide === 'NONE') {
+          outcome = 'skip-none';
+          skipReason = 'side=NONE — model found no edge';
+          appContent = `Skipped "${cand.question}". ${rawRationale}`;
+        } else {
+          outcome = 'skip-rejected';
+          skipReason = result.validation.reason;
+          appContent = `Considered "${cand.question}" but ${result.validation.reason}. ${rawRationale}`;
+        }
+        const postThought = await supabase.from('thoughts').insert({
+          scope: 'app',
+          market_condition_id: cand.conditionId,
+          content: `${appContent} [in=${result.tokens_in} out=${result.tokens_out} cached=${result.cached_tokens} cost=$${result.cost_usd.toFixed(6)}]`,
+          tokens_in: result.tokens_in,
+          tokens_out: result.tokens_out,
+        });
+        if (postThought.error) {
+          console.error('[brain-tick] post-thought insert failed:', postThought.error);
+        }
+
+        // Public-scope summary fires for EVERY analysis — trade signal or
+        // skip — so the public feed never goes silent on a tick that did
+        // real work. Choose the prompt that matches the outcome.
+        const publicSummary =
+          outcome === 'signal' && result.validation.ok
+            ? await summarizeTradeSignal({
+                question: cand.question,
+                rationale: result.validation.value.rationale,
+                side: result.validation.value.side,
+                price: result.validation.value.suggested_price,
+                conviction: result.validation.value.conviction,
+              })
+            : await summarizeSkip({
+                question: cand.question,
+                rationale:
+                  outcome === 'skip-low-conviction' && result.validation.ok
+                    ? result.validation.value.rationale
+                    : rawRationale,
+                reason: skipReason,
+              });
+        await logUsage({
+          provider: 'groq',
+          model: publicSummary.model,
+          tokens_in: publicSummary.tokens_in,
+          tokens_out: publicSummary.tokens_out,
+          cost_usd: publicSummary.cost_usd,
+          step: 'public-summary',
+          brain_tick_id: tickId,
+        });
+        if (publicSummary.text) {
+          const publicThought = await supabase.from('thoughts').insert({
+            scope: 'public',
+            market_condition_id: cand.conditionId,
+            content: publicSummary.text,
+            tokens_in: publicSummary.tokens_in,
+            tokens_out: publicSummary.tokens_out,
+          });
+          if (publicThought.error) {
+            console.error('[brain-tick] public-summary thought insert failed:', publicThought.error);
+          }
+        }
+        if (outcome !== 'signal' || !result.validation.ok) {
+          return { conditionId: cand.conditionId, inserted: false, reason: skipReason || 'no signal' };
+        }
+
+        const v = result.validation.value;
+
+        // Dedupe: skip if an open row already exists for (market, side).
+        const { data: existing } = await supabase
+          .from('trade_recommendations')
+          .select('id')
+          .eq('market_condition_id', cand.conditionId)
+          .eq('side', v.side)
+          .eq('status', 'open')
+          .limit(1);
+        if (existing && existing.length > 0) {
+          return { conditionId: cand.conditionId, inserted: false, reason: 'duplicate open row' };
+        }
+
+        const tradeInsert = await supabase.from('trade_recommendations').insert({
+          market_condition_id: cand.conditionId,
+          market_question: cand.question,
+          token_id: v.token_id,
+          side: v.side,
+          price: v.suggested_price,
+          size: v.suggested_size_usd,
+          conviction: v.conviction,
+          rationale: v.rationale,
+          neg_risk: cand.negRisk ?? false,
+          status: 'open',
+          expires_at: cand.endDate,
+        });
+        if (tradeInsert.error) {
+          console.error('[brain-tick] trade_recommendations insert failed:', tradeInsert.error);
+        }
+
+        return {
+          conditionId: cand.conditionId,
+          inserted: true,
+          conviction: v.conviction,
+          side: v.side,
+        };
+      });
+
+      analyzed += 1;
+      if (stepResult?.inserted) inserted += 1;
+    }
+
+    return {
+      scanned: markets.length,
+      fresh: fresh.length,
+      classified: classified.length,
+      analyzed,
+      inserted,
+      tickId,
+    };
+  },
+);
