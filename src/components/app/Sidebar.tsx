@@ -1,5 +1,6 @@
 'use client';
 
+import Image from 'next/image';
 import Link from 'next/link';
 
 const DAILY_FREE_MESSAGES = 5;
@@ -19,8 +20,14 @@ export function Sidebar({
   return (
     <aside className="flex h-full flex-col border-r border-white/[0.06] bg-black/40 px-4 py-5 backdrop-blur-sm">
       <header className="mb-5 flex items-center gap-2.5">
-        <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-white/[0.04]">
-          <span className="text-sm font-semibold text-zinc-50">ø</span>
+        <div className="h-8 w-8 overflow-hidden rounded-lg border border-white/10 bg-white/[0.04]">
+          <Image
+            src="/zer0-img.png"
+            alt="zer0"
+            width={32}
+            height={32}
+            className="h-full w-full object-cover"
+          />
         </div>
         <span className="text-sm font-semibold tracking-tight text-zinc-100">
           zer0

@@ -1,5 +1,6 @@
 'use client';
 
+import Image from 'next/image';
 import { useEffect, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { ThoughtsBubble } from './ThoughtsBubble';
@@ -40,8 +41,14 @@ export function ChatHeader({
   return (
     <header className="flex items-center justify-between border-b border-white/[0.06] bg-black/30 px-4 py-3 backdrop-blur-sm sm:px-6">
       <div className="flex items-center gap-3">
-        <div className="flex h-9 w-9 items-center justify-center rounded-full border border-white/10 bg-white/[0.04]">
-          <span className="text-sm font-semibold text-zinc-50">ø</span>
+        <div className="h-9 w-9 overflow-hidden rounded-full border border-white/10 bg-white/[0.04]">
+          <Image
+            src="/zer0-img.png"
+            alt="zer0"
+            width={36}
+            height={36}
+            className="h-full w-full object-cover"
+          />
         </div>
         <div className="flex flex-col leading-tight">
           <span className="text-sm font-semibold text-zinc-100">zer0</span>

@@ -17,6 +17,11 @@ export const metadata: Metadata = {
   title: "ZER0 — autonomous Polymarket agent",
   description:
     "An autonomous AI watching Polymarket for deterministic-outcome trades. Watch its thoughts in real time.",
+  icons: {
+    icon: "/FAVICON.png",
+    shortcut: "/FAVICON.png",
+    apple: "/FAVICON.png",
+  },
 };
 
 export default function RootLayout({
