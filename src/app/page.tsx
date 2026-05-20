@@ -35,7 +35,7 @@ export default function Home() {
           </span>
         </Link>
         <a
-          href="https://t.me/zer0_bot"
+          href="https://t.me/zer0_polymarket_BOT"
           className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.03] px-5 py-2.5 text-sm font-medium text-zinc-200 backdrop-blur-md transition hover:border-white/20 hover:bg-white/[0.06]"
         >
           telegram bot

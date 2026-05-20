@@ -54,8 +54,8 @@ async function consumeSseStream(
 
 export const ChatPanel = forwardRef<
   ChatPanelHandle,
-  { onUsageChange?: (count: number) => void }
->(function ChatPanel({ onUsageChange }, ref) {
+  { onMessageSent?: () => void }
+>(function ChatPanel({ onMessageSent }, ref) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [sessionId, setSessionId] = useState<string | undefined>();
   const [busy, setBusy] = useState(false);
@@ -86,15 +86,12 @@ export const ChatPanel = forwardRef<
       content: text,
     };
     const assistantId = nextId();
-    setMessages((prev) => {
-      const next = [
-        ...prev,
-        userMsg,
-        { id: assistantId, role: 'assistant' as const, content: '', streaming: true },
-      ];
-      onUsageChange?.(next.filter((m) => m.role === 'user').length);
-      return next;
-    });
+    setMessages((prev) => [
+      ...prev,
+      userMsg,
+      { id: assistantId, role: 'assistant' as const, content: '', streaming: true },
+    ]);
+    onMessageSent?.();
 
     try {
       const res = await fetch('/api/chat', {
