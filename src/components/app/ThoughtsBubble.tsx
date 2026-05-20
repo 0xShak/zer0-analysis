@@ -1,7 +1,9 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { createClient } from '@/lib/supabase/client';
+import { usePopupAnchor } from './usePopupAnchor';
 
 type Thought = {
   id: number;
@@ -38,7 +40,9 @@ export function ThoughtsBubble() {
   const [open, setOpen] = useState(false);
   const [thoughts, setThoughts] = useState<Thought[]>([]);
   const [lastSeen, setLastSeen] = useState<number>(() => readLastSeen());
-  const containerRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const popupRef = useRef<HTMLDivElement>(null);
+  const anchor = usePopupAnchor(open, triggerRef);
 
   useEffect(() => {
     const supabase = createClient();
@@ -79,7 +83,11 @@ export function ThoughtsBubble() {
   useEffect(() => {
     if (!open) return;
     function onClick(e: MouseEvent) {
-      if (!containerRef.current?.contains(e.target as Node)) {
+      const target = e.target as Node;
+      if (
+        !popupRef.current?.contains(target) &&
+        !triggerRef.current?.contains(target)
+      ) {
         setOpen(false);
       }
     }
@@ -107,9 +115,47 @@ export function ThoughtsBubble() {
     }
   }
 
+  const popup = open && anchor
+    ? createPortal(
+        <div
+          ref={popupRef}
+          role="dialog"
+          aria-label="zer0's recent thoughts"
+          style={{ top: anchor.top, right: anchor.right }}
+          className="fixed z-[100] w-80 overflow-hidden rounded-2xl border border-white/10 bg-zinc-950 shadow-[0_20px_60px_-15px_rgba(0,0,0,0.8)] sm:w-96"
+        >
+          <div className="border-b border-white/[0.06] bg-zinc-950 px-4 py-2.5">
+            <h3 className="text-xs font-medium uppercase tracking-[0.18em] text-zinc-400">
+              thoughts
+            </h3>
+          </div>
+          <ul className="max-h-96 divide-y divide-white/[0.04] overflow-y-auto bg-zinc-950">
+            {thoughts.length === 0 ? (
+              <li className="px-4 py-6 text-center text-xs text-zinc-500">
+                zer0 hasn&apos;t emitted any thoughts yet.
+              </li>
+            ) : (
+              thoughts.slice(0, 5).map((t) => (
+                <li key={t.id} className="px-4 py-3">
+                  <p className="text-sm leading-snug text-zinc-200">
+                    {t.content}
+                  </p>
+                  <p className="mt-1 text-[10px] uppercase tracking-wider text-zinc-500">
+                    {relTime(t.created_at)}
+                  </p>
+                </li>
+              ))
+            )}
+          </ul>
+        </div>,
+        document.body,
+      )
+    : null;
+
   return (
-    <div ref={containerRef} className="relative">
+    <>
       <button
+        ref={triggerRef}
         onClick={toggle}
         aria-label="zer0's thoughts"
         className="relative flex h-9 w-9 items-center justify-center rounded-full border border-white/10 bg-white/[0.04] text-zinc-300 transition hover:border-white/20 hover:bg-white/[0.07] hover:text-zinc-100"
@@ -135,37 +181,7 @@ export function ThoughtsBubble() {
           </span>
         ) : null}
       </button>
-
-      {open ? (
-        <div
-          role="dialog"
-          className="glass-strong absolute right-0 top-11 z-30 w-80 overflow-hidden rounded-2xl shadow-[0_20px_60px_-15px_rgba(0,0,0,0.7)] sm:w-96"
-        >
-          <div className="border-b border-white/[0.06] px-4 py-2.5">
-            <h3 className="text-xs font-medium uppercase tracking-[0.18em] text-zinc-400">
-              thoughts
-            </h3>
-          </div>
-          <ul className="max-h-96 divide-y divide-white/[0.04] overflow-y-auto">
-            {thoughts.length === 0 ? (
-              <li className="px-4 py-6 text-center text-xs text-zinc-500">
-                zer0 hasn&apos;t emitted any thoughts yet.
-              </li>
-            ) : (
-              thoughts.slice(0, 5).map((t) => (
-                <li key={t.id} className="px-4 py-3">
-                  <p className="text-sm leading-snug text-zinc-200">
-                    {t.content}
-                  </p>
-                  <p className="mt-1 text-[10px] uppercase tracking-wider text-zinc-500">
-                    {relTime(t.created_at)}
-                  </p>
-                </li>
-              ))
-            )}
-          </ul>
-        </div>
-      ) : null}
-    </div>
+      {popup}
+    </>
   );
 }
