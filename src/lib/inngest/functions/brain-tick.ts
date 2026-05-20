@@ -156,8 +156,17 @@ export const brainTick = inngest.createFunction(
 
     const classified = await step.run('classify', async () => {
       const groq = getGroq();
-      const out: ClassifiedCandidate[] = [];
-      for (const m of fresh.slice(0, 30)) {
+      const targets = fresh.slice(0, 30);
+      // Parallelize with bounded concurrency. Sequential at 30 markets × ~1-2s
+      // per Groq call would exceed Vercel's per-invocation timeout (25s Hobby,
+      // 60s Pro) and freeze the whole brain-tick. With CONCURRENCY=10 the loop
+      // completes in ~3 batches (~3-5s wall-clock total). Groq Free is 30 RPM
+      // — 30 calls in a single second is still well inside that minute window.
+      const CONCURRENCY = 10;
+
+      async function classifyOne(
+        m: (typeof targets)[number],
+      ): Promise<ClassifiedCandidate | null> {
         const prompt = `Decide whether this Polymarket prediction market has a CLEAR, DETERMINISTIC resolution criterion.
 
 Market: ${m.question}
@@ -174,13 +183,6 @@ Respond ONLY JSON: {"deterministic": boolean, "category": "sports|crypto_price|e
             temperature: 0,
           });
           const json = JSON.parse(resp.choices[0]?.message?.content ?? '{}');
-          out.push({
-            ...m,
-            deterministic: !!json.deterministic,
-            confidence: typeof json.confidence === 'number' ? json.confidence : 0,
-            reason: json.reason ?? '',
-            category: json.category ?? 'other',
-          });
           const tokens_in = resp.usage?.prompt_tokens ?? 0;
           const tokens_out = resp.usage?.completion_tokens ?? 0;
           await logUsage({
@@ -188,13 +190,32 @@ Respond ONLY JSON: {"deterministic": boolean, "category": "sports|crypto_price|e
             model: GROQ_MODELS.CLASSIFIER,
             tokens_in,
             tokens_out,
-            cost_usd: computeCost(GROQ_MODELS.CLASSIFIER, { tokens_in, tokens_out }),
+            cost_usd: computeCost(GROQ_MODELS.CLASSIFIER, {
+              tokens_in,
+              tokens_out,
+            }),
             step: 'classify',
             brain_tick_id: tickId,
           });
+          return {
+            ...m,
+            deterministic: !!json.deterministic,
+            confidence:
+              typeof json.confidence === 'number' ? json.confidence : 0,
+            reason: json.reason ?? '',
+            category: json.category ?? 'other',
+          };
         } catch (err) {
           logger.warn(`classify failed for ${m.conditionId}`, err);
+          return null;
         }
+      }
+
+      const out: ClassifiedCandidate[] = [];
+      for (let i = 0; i < targets.length; i += CONCURRENCY) {
+        const batch = targets.slice(i, i + CONCURRENCY);
+        const results = await Promise.all(batch.map(classifyOne));
+        for (const r of results) if (r) out.push(r);
       }
       return out;
     });

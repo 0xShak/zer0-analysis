@@ -19,6 +19,9 @@ import { hasActiveEntitlement } from '@/lib/rate-limit';
 // edge.
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+// Streaming Groq replies are usually < 5s but the response stays open until
+// the model finishes; 30s is comfortable headroom under Vercel Hobby's max.
+export const maxDuration = 30;
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
