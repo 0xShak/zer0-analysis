@@ -2,8 +2,6 @@
 
 import { useState } from 'react';
 
-// Stub wallet connect — request accounts via window.ethereum.
-// Day 5 in zer0.md §13 swaps this for Privy or RainbowKit + viem.
 type EthereumProvider = {
   request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
 };
@@ -25,11 +23,13 @@ export function WalletConnect({
   async function connect() {
     setError(null);
     if (typeof window === 'undefined' || !window.ethereum) {
-      setError('No injected wallet found');
+      setError('no injected wallet found');
       return;
     }
     try {
-      const accounts = (await window.ethereum.request({ method: 'eth_requestAccounts' })) as string[];
+      const accounts = (await window.ethereum.request({
+        method: 'eth_requestAccounts',
+      })) as string[];
       if (accounts[0]) {
         setAddress(accounts[0]);
         onConnect(accounts[0]);
@@ -39,21 +39,29 @@ export function WalletConnect({
     }
   }
 
+  if (address) {
+    return (
+      <span
+        className="flex h-9 items-center gap-1.5 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 font-mono text-[11px] text-emerald-200"
+        title={address}
+      >
+        <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+        {address.slice(0, 6)}…{address.slice(-4)}
+      </span>
+    );
+  }
+
   return (
-    <div>
-      {address ? (
-        <span className="rounded-md bg-zinc-800 px-3 py-1.5 text-xs font-mono text-zinc-200">
-          {address.slice(0, 6)}…{address.slice(-4)}
-        </span>
-      ) : (
-        <button
-          onClick={() => void connect()}
-          className="rounded-md border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-xs font-medium text-zinc-100 hover:border-emerald-500"
-        >
-          Connect wallet
-        </button>
-      )}
-      {error ? <p className="mt-1 text-xs text-rose-400">{error}</p> : null}
+    <div className="flex flex-col items-end">
+      <button
+        onClick={() => void connect()}
+        className="flex h-9 items-center rounded-full border border-white/10 bg-white/[0.04] px-3.5 text-xs font-medium text-zinc-200 transition hover:border-white/20 hover:bg-white/[0.07]"
+      >
+        connect wallet
+      </button>
+      {error ? (
+        <span className="mt-1 text-[10px] text-rose-400">{error}</span>
+      ) : null}
     </div>
   );
 }
