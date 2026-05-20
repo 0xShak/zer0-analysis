@@ -50,14 +50,14 @@ export const brainTick = inngest.createFunction(
     const tickId = `tick-${Math.floor(Date.now() / 120_000) * 120_000}`;
 
     const scanResult = await step.run('scan-markets', async () => {
-      // Gamma's /markets endpoint paginates at limit=100. Walk up to 10 pages
-      // (~4s wall-clock) so the long tail surfaces non-sports markets — the
-      // top of Gamma's default ordering is heavily sports-weighted, so a
-      // narrow window means soccer-monoculture downstream. Hard-cap at 1000
-      // to stay safely inside the 25s Inngest Hobby step budget.
+      // Gamma's /markets endpoint paginates at limit=100. Walk up to 6 pages
+      // so the long tail surfaces non-sports markets — Gamma's default order
+      // is heavily sports-weighted, so a narrow window means soccer-only
+      // downstream. Cap at 6 pages × 8s per-page Gamma timeout = 48s worst
+      // case, safely under the 60s Vercel maxDuration for this step.
       const PAGE_LIMIT = 100;
-      const MAX_PAGES = 10;
-      const HARD_CAP = 1000;
+      const MAX_PAGES = 6;
+      const HARD_CAP = 600;
       const all: GammaMarket[] = [];
       let pagesFetched = 0;
       for (let i = 0; i < MAX_PAGES; i++) {

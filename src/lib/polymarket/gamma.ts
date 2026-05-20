@@ -81,6 +81,11 @@ function normalise(m: GammaMarketRaw): GammaMarket {
   };
 }
 
+// Per-request timeout. Polymarket Gamma is normally ~300-800ms but
+// occasionally hangs; without a hard cap, a single slow page can consume the
+// whole 60s Vercel budget for the scan-markets step.
+const GAMMA_REQUEST_TIMEOUT_MS = 8000;
+
 export async function fetchTradableMarkets(limit = 100, offset = 0): Promise<GammaMarket[]> {
   const params = new URLSearchParams({
     active: 'true',
@@ -90,15 +95,22 @@ export async function fetchTradableMarkets(limit = 100, offset = 0): Promise<Gam
     limit: String(limit),
     offset: String(offset),
   });
-  const res = await fetch(`${GAMMA_BASE}/markets?${params}`, {
-    headers: { Accept: 'application/json' },
-    next: { revalidate: 60 },
-  });
-  if (!res.ok) {
-    throw new Error(`Gamma /markets ${res.status}: ${await res.text()}`);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), GAMMA_REQUEST_TIMEOUT_MS);
+  try {
+    const res = await fetch(`${GAMMA_BASE}/markets?${params}`, {
+      headers: { Accept: 'application/json' },
+      next: { revalidate: 60 },
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      throw new Error(`Gamma /markets ${res.status}: ${await res.text()}`);
+    }
+    const raw = (await res.json()) as GammaMarketRaw[];
+    return raw.map(normalise);
+  } finally {
+    clearTimeout(timer);
   }
-  const raw = (await res.json()) as GammaMarketRaw[];
-  return raw.map(normalise);
 }
 
 // Numeric guards from zer0.md §9 — Gamma ships no thresholds, we add them.
