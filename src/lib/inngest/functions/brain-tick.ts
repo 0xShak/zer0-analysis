@@ -4,7 +4,7 @@ import { createAdminClient } from '../../supabase/admin';
 import { fetchTradableMarkets, passesNumericFilter, type GammaMarket } from '../../polymarket/gamma';
 import { getGroq, GROQ_MODELS } from '../../groq';
 import { analyzeCandidate } from '../../agents/deep-analyzer';
-import { summarizeScan, summarizeSkip, summarizeTradeSignal } from '../../groq/summarize';
+import { summarizeScan, summarizeTradeSignal } from '../../groq/summarize';
 import { logUsage } from '../../cost/log';
 import { isUnderDailyBudget } from '../../cost/budget';
 import { computeCost } from '../../cost/openai-pricing';
@@ -41,13 +41,16 @@ export const brainTick = inngest.createFunction(
   {
     id: 'zer0-brain-tick',
     name: 'ZER0 brain tick',
-    triggers: [cron('*/2 * * * *')],
+    // Every 30 minutes — 48 ticks/day fits within Groq free tier's 500k
+    // tokens-per-day on llama-3.1-8b-instant. Faster cadence quickly
+    // exhausts the daily budget and stalls the brain mid-day.
+    triggers: [cron('*/30 * * * *')],
   },
   async ({ step, logger }) => {
     const supabase = createAdminClient();
-    // Tick id anchored to a 2-minute UTC window so retries of the same
+    // Tick id anchored to a 30-minute UTC window so retries of the same
     // cron firing get the same id in agent_usage.brain_tick_id.
-    const tickId = `tick-${Math.floor(Date.now() / 120_000) * 120_000}`;
+    const tickId = `tick-${Math.floor(Date.now() / 1_800_000) * 1_800_000}`;
 
     const scanResult = await step.run('scan-markets', async () => {
       // Gamma's /markets endpoint paginates at limit=100. Walk up to 6 pages
@@ -156,13 +159,53 @@ export const brainTick = inngest.createFunction(
 
     const classified = await step.run('classify', async () => {
       const groq = getGroq();
-      // Classify breadth = 20 (not 30): per tick we ALSO fire 1 scan-summary
-      // + up to 5 per-analysis-summary Groq calls. Total ≤ 26 stays under
-      // free-tier 30 RPM in the sliding window between consecutive ticks. The
-      // Groq client is configured with maxRetries=0 so any stray 429 fails
-      // fast (returns null below) rather than burning the function budget.
-      const targets = fresh.slice(0, 20);
+      // Classify breadth = 10. Combined with the cache lookup below, most
+      // ticks fire 0-3 Groq classifier calls (only for genuinely new
+      // markets). Stays well within Groq free tier's 500k TPD budget.
+      const targets = fresh.slice(0, 10);
       const CONCURRENCY = 5;
+      const CACHE_TTL_HOURS = 24;
+      const now = Date.now();
+
+      // Cache lookup — markets classified in the last 24h reuse the stored
+      // result instead of burning another Groq call. The dedupe step has
+      // already excluded markets without a significant price move, so we
+      // know a cached classification is still representative.
+      const ids = targets.map((m) => m.conditionId);
+      const { data: existing } = ids.length
+        ? await supabase
+            .from('market_scans')
+            .select(
+              'condition_id, deterministic, category, classifier_confidence, classifier_reason, last_seen_at',
+            )
+            .in('condition_id', ids)
+        : { data: [] as Array<{
+            condition_id: string;
+            deterministic: boolean | null;
+            category: string | null;
+            classifier_confidence: number | null;
+            classifier_reason: string | null;
+            last_seen_at: string | null;
+          }> };
+      const cache = new Map(
+        (existing ?? []).map((r) => [r.condition_id, r] as const),
+      );
+
+      function tryCache(m: (typeof targets)[number]): ClassifiedCandidate | null {
+        const prev = cache.get(m.conditionId);
+        if (!prev || prev.deterministic === null) return null;
+        if (!prev.last_seen_at) return null;
+        const hoursSinceSeen =
+          (now - new Date(prev.last_seen_at).getTime()) / (1000 * 60 * 60);
+        if (hoursSinceSeen >= CACHE_TTL_HOURS) return null;
+        return {
+          ...m,
+          deterministic: prev.deterministic,
+          confidence: Number(prev.classifier_confidence ?? 0),
+          reason: prev.classifier_reason ?? '',
+          category: prev.category ?? 'other',
+        };
+      }
 
       async function classifyOne(
         m: (typeof targets)[number],
@@ -212,8 +255,17 @@ Respond ONLY JSON: {"deterministic": boolean, "category": "sports|crypto_price|e
       }
 
       const out: ClassifiedCandidate[] = [];
-      for (let i = 0; i < targets.length; i += CONCURRENCY) {
-        const batch = targets.slice(i, i + CONCURRENCY);
+      const toGroq: typeof targets = [];
+      for (const m of targets) {
+        const cached = tryCache(m);
+        if (cached) out.push(cached);
+        else toGroq.push(m);
+      }
+      logger.info(
+        `classify: ${out.length} cache-hits, ${toGroq.length} Groq calls`,
+      );
+      for (let i = 0; i < toGroq.length; i += CONCURRENCY) {
+        const batch = toGroq.slice(i, i + CONCURRENCY);
         const results = await Promise.all(batch.map(classifyOne));
         for (const r of results) if (r) out.push(r);
       }
@@ -242,32 +294,57 @@ Respond ONLY JSON: {"deterministic": boolean, "category": "sports|crypto_price|e
         byCategory[c.category] = (byCategory[c.category] ?? 0) + 1;
       }
       const seenCount = Math.max(0, markets.length - fresh.length);
-      const summary = await summarizeScan({
-        rawCount: scanResult.rawCount,
-        pagesFetched: scanResult.pagesFetched,
-        passingFilter: markets.length,
-        freshCount: fresh.length,
-        seenCount,
-        deterministicCount,
-        byCategory,
-      });
-      await logUsage({
-        provider: 'groq',
-        model: summary.model,
-        tokens_in: summary.tokens_in,
-        tokens_out: summary.tokens_out,
-        cost_usd: summary.cost_usd,
-        step: 'scan-summary',
-        brain_tick_id: tickId,
-      });
-      const content =
-        summary.text ||
-        `ZER0 scanned ${markets.length} tradable markets — ${deterministicCount} look deterministic.`;
+      const fallbackContent = `ZER0 scanned ${markets.length} tradable markets — ${deterministicCount} look deterministic.`;
+
+      // If nothing classified (all cache hits or empty fresh), don't burn a
+      // Groq call on a summary that has no new info to summarize.
+      if (classified.length === 0) {
+        const { error } = await supabase.from('thoughts').insert({
+          scope: 'public',
+          content: `ZER0 scanned ${markets.length} tradable markets, all already-classified — nothing new to deep-think this tick.`,
+        });
+        if (error) {
+          console.error('[brain-tick] empty-scan thought insert failed:', error);
+        }
+        return;
+      }
+
+      let content = fallbackContent;
+      let tokens_in = 0;
+      let tokens_out = 0;
+      try {
+        const summary = await summarizeScan({
+          rawCount: scanResult.rawCount,
+          pagesFetched: scanResult.pagesFetched,
+          passingFilter: markets.length,
+          freshCount: fresh.length,
+          seenCount,
+          deterministicCount,
+          byCategory,
+        });
+        await logUsage({
+          provider: 'groq',
+          model: summary.model,
+          tokens_in: summary.tokens_in,
+          tokens_out: summary.tokens_out,
+          cost_usd: summary.cost_usd,
+          step: 'scan-summary',
+          brain_tick_id: tickId,
+        });
+        content = summary.text || fallbackContent;
+        tokens_in = summary.tokens_in;
+        tokens_out = summary.tokens_out;
+      } catch (err) {
+        // Groq rate-limited or down — fall back to the templated thought so
+        // a single 429 doesn't fail the whole tick.
+        logger.warn('[brain-tick] summarizeScan failed, using templated thought', err);
+      }
+
       const { error } = await supabase.from('thoughts').insert({
         scope: 'public',
         content,
-        tokens_in: summary.tokens_in,
-        tokens_out: summary.tokens_out,
+        tokens_in,
+        tokens_out,
       });
       if (error) {
         console.error('[brain-tick] scan-summary thought insert failed:', error);
@@ -463,42 +540,70 @@ Respond ONLY JSON: {"deterministic": boolean, "category": "sports|crypto_price|e
           console.error('[brain-tick] post-thought insert failed:', postThought.error);
         }
 
-        // Public-scope summary fires for EVERY analysis — trade signal or
-        // skip — so the public feed never goes silent on a tick that did
-        // real work. Choose the prompt that matches the outcome.
-        const publicSummary =
-          outcome === 'signal' && result.validation.ok
-            ? await summarizeTradeSignal({
-                question: cand.question,
-                rationale: result.validation.value.rationale,
-                side: result.validation.value.side,
-                price: result.validation.value.suggested_price,
-                conviction: result.validation.value.conviction,
-              })
-            : await summarizeSkip({
-                question: cand.question,
-                rationale:
-                  outcome === 'skip-low-conviction' && result.validation.ok
-                    ? result.validation.value.rationale
-                    : rawRationale,
-                reason: skipReason,
-              });
-        await logUsage({
-          provider: 'groq',
-          model: publicSummary.model,
-          tokens_in: publicSummary.tokens_in,
-          tokens_out: publicSummary.tokens_out,
-          cost_usd: publicSummary.cost_usd,
-          step: 'public-summary',
-          brain_tick_id: tickId,
-        });
-        if (publicSummary.text) {
+        // Public-scope summary — fires per analysis so the public feed
+        // doesn't go silent. To stay inside Groq's 500k TPD budget, only
+        // signals get the LLM treatment (rare); skip outcomes use a templated
+        // first-sentence-of-rationale message. Any LLM 429 falls back to the
+        // template via try/catch so a rate-limited tick doesn't fail.
+        function firstSentence(s: string): string {
+          const trimmed = s.trim();
+          if (!trimmed) return '';
+          const match = trimmed.match(/^[^.!?]*[.!?]/);
+          return (match ? match[0] : trimmed).trim();
+        }
+        const skipRationaleSrc =
+          outcome === 'skip-low-conviction' && result.validation.ok
+            ? result.validation.value.rationale
+            : rawRationale;
+        const skipTemplated =
+          outcome === 'skip-low-conviction' && result.validation.ok
+            ? `Looked at "${cand.question}" but didn't see enough edge — conviction came in at ${result.validation.value.conviction.toFixed(2)}, below the bar. ${firstSentence(skipRationaleSrc)}`
+            : outcome === 'skip-none'
+              ? `Looked at "${cand.question}" — couldn't find a clear angle. ${firstSentence(skipRationaleSrc)}`
+              : `Looked at "${cand.question}" but the analyzer output failed validation. Moving on.`;
+
+        let publicText = '';
+        let publicTokensIn = 0;
+        let publicTokensOut = 0;
+        if (outcome === 'signal' && result.validation.ok) {
+          try {
+            const publicSummary = await summarizeTradeSignal({
+              question: cand.question,
+              rationale: result.validation.value.rationale,
+              side: result.validation.value.side,
+              price: result.validation.value.suggested_price,
+              conviction: result.validation.value.conviction,
+            });
+            await logUsage({
+              provider: 'groq',
+              model: publicSummary.model,
+              tokens_in: publicSummary.tokens_in,
+              tokens_out: publicSummary.tokens_out,
+              cost_usd: publicSummary.cost_usd,
+              step: 'public-summary',
+              brain_tick_id: tickId,
+            });
+            publicText = publicSummary.text;
+            publicTokensIn = publicSummary.tokens_in;
+            publicTokensOut = publicSummary.tokens_out;
+          } catch (err) {
+            console.warn('[brain-tick] summarizeTradeSignal failed, using templated thought', err);
+          }
+          if (!publicText) {
+            const v = result.validation.value;
+            publicText = `Signal on "${cand.question}": ${v.side} @ ${v.suggested_price.toFixed(2)}, conviction ${v.conviction.toFixed(2)}. ${firstSentence(v.rationale)}`;
+          }
+        } else {
+          // Skip outcome — templated, no Groq call.
+          publicText = skipTemplated;
+        }
+        if (publicText) {
           const publicThought = await supabase.from('thoughts').insert({
             scope: 'public',
             market_condition_id: cand.conditionId,
-            content: publicSummary.text,
-            tokens_in: publicSummary.tokens_in,
-            tokens_out: publicSummary.tokens_out,
+            content: publicText,
+            tokens_in: publicTokensIn,
+            tokens_out: publicTokensOut,
           });
           if (publicThought.error) {
             console.error('[brain-tick] public-summary thought insert failed:', publicThought.error);
