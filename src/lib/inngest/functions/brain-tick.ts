@@ -50,12 +50,14 @@ export const brainTick = inngest.createFunction(
     const tickId = `tick-${Math.floor(Date.now() / 120_000) * 120_000}`;
 
     const scanResult = await step.run('scan-markets', async () => {
-      // Gamma's /markets endpoint paginates at limit=100. One page covers
-      // far too little of the orderbook universe; walk up to 5 pages and
-      // hard-cap at 500 to stay inside Inngest step time budgets.
+      // Gamma's /markets endpoint paginates at limit=100. Walk up to 10 pages
+      // (~4s wall-clock) so the long tail surfaces non-sports markets — the
+      // top of Gamma's default ordering is heavily sports-weighted, so a
+      // narrow window means soccer-monoculture downstream. Hard-cap at 1000
+      // to stay safely inside the 25s Inngest Hobby step budget.
       const PAGE_LIMIT = 100;
-      const MAX_PAGES = 5;
-      const HARD_CAP = 500;
+      const MAX_PAGES = 10;
+      const HARD_CAP = 1000;
       const all: GammaMarket[] = [];
       let pagesFetched = 0;
       for (let i = 0; i < MAX_PAGES; i++) {
@@ -155,7 +157,7 @@ export const brainTick = inngest.createFunction(
     const classified = await step.run('classify', async () => {
       const groq = getGroq();
       const out: ClassifiedCandidate[] = [];
-      for (const m of fresh.slice(0, 20)) {
+      for (const m of fresh.slice(0, 30)) {
         const prompt = `Decide whether this Polymarket prediction market has a CLEAR, DETERMINISTIC resolution criterion.
 
 Market: ${m.question}
@@ -252,20 +254,57 @@ Respond ONLY JSON: {"deterministic": boolean, "category": "sports|crypto_price|e
     });
 
     // ─── Deep analysis (Day 2) ──────────────────────────────────────────────
-    // Select top 5 deterministic candidates by (confidence * normalised liquidity).
+    // Score deterministic candidates by (confidence * normalised liquidity),
+    // then select top 5 with a category cap so a sports-heavy Gamma feed
+    // doesn't crowd out the occasional crypto/election/policy candidate.
+    // Algorithm: bucket by classifier category, sort each bucket by score,
+    // round-robin pick across non-empty buckets (cap 2/category), break ties
+    // by final score descending so the highest-conviction signal still leads.
     const candidates = classified.filter((c) => c.deterministic);
     const maxLiq = candidates.reduce(
       (m, c) => Math.max(m, parseFloat(c.liquidity ?? '0') || 0),
       0,
     );
-    const ranked = candidates
-      .map((c) => {
-        const liq = parseFloat(c.liquidity ?? '0') || 0;
-        const normLiq = maxLiq > 0 ? liq / maxLiq : 0.5;
-        return { c, score: c.confidence * normLiq };
-      })
+    const scored = candidates.map((c) => {
+      const liq = parseFloat(c.liquidity ?? '0') || 0;
+      const normLiq = maxLiq > 0 ? liq / maxLiq : 0.5;
+      return { c, score: c.confidence * normLiq };
+    });
+
+    const TOP_K = 5;
+    const PER_CATEGORY_CAP = 2;
+    const buckets = new Map<string, typeof scored>();
+    for (const s of scored) {
+      const cat = s.c.category || 'other';
+      const arr = buckets.get(cat);
+      if (arr) arr.push(s);
+      else buckets.set(cat, [s]);
+    }
+    for (const arr of buckets.values()) arr.sort((a, b) => b.score - a.score);
+    // Stable iteration order over buckets — prefer the bucket whose top
+    // score is highest first, so the strongest single signal leads.
+    const orderedCats = [...buckets.entries()]
+      .sort((a, b) => (b[1][0]?.score ?? 0) - (a[1][0]?.score ?? 0))
+      .map(([cat]) => cat);
+    const taken = new Map<string, number>();
+    const selected: typeof scored = [];
+    while (selected.length < TOP_K) {
+      let progressed = false;
+      for (const cat of orderedCats) {
+        if (selected.length >= TOP_K) break;
+        const bucket = buckets.get(cat);
+        if (!bucket || bucket.length === 0) continue;
+        if ((taken.get(cat) ?? 0) >= PER_CATEGORY_CAP) continue;
+        const next = bucket.shift();
+        if (!next) continue;
+        selected.push(next);
+        taken.set(cat, (taken.get(cat) ?? 0) + 1);
+        progressed = true;
+      }
+      if (!progressed) break;
+    }
+    const ranked = selected
       .sort((a, b) => b.score - a.score)
-      .slice(0, 5)
       .map((r) => r.c);
 
     if (ranked.length === 0) {
@@ -295,18 +334,11 @@ Respond ONLY JSON: {"deterministic": boolean, "category": "sports|crypto_price|e
 
     for (const cand of ranked) {
       // Each candidate is its own Inngest step so a transient failure on
-      // one doesn't redo the OpenAI calls we already paid for.
+      // one doesn't redo the OpenAI calls we already paid for. NB: do NOT
+      // emit a pre-thought here — this step is retried on failure, and any
+      // insert before the OpenAI call would duplicate per retry attempt.
+      // All thought rows are written exactly once at the end of the step.
       const stepResult = await step.run(`analyze-${cand.conditionId}`, async () => {
-        // Pre-thought: announce what we're about to analyze.
-        const preThought = await supabase.from('thoughts').insert({
-          scope: 'app',
-          market_condition_id: cand.conditionId,
-          content: `Analyzing "${cand.question}" with ${ANALYZER_MODEL}. Liquidity $${parseFloat(cand.liquidity).toLocaleString()}, current outcomes ${cand.outcomePrices.join('/')}.`,
-        });
-        if (preThought.error) {
-          console.error('[deep-analyzer] pre-thought insert failed:', preThought.error);
-        }
-
         const endMs = new Date(cand.endDate).getTime();
         const hoursToRes = Number.isNaN(endMs)
           ? 0
@@ -375,23 +407,29 @@ Respond ONLY JSON: {"deterministic": boolean, "category": "sports|crypto_price|e
         let outcome: 'signal' | 'skip-none' | 'skip-low-conviction' | 'skip-rejected';
         let appContent: string;
         let skipReason = '';
+        // Prefix shared across outcomes — keeps the per-tick market context
+        // (which used to be the pre-thought) in the same row as the verdict,
+        // so the thoughts feed has one entry per market per tick.
+        const liquidityStr = `$${parseFloat(cand.liquidity).toLocaleString()}`;
+        const pricesStr = cand.outcomePrices.join('/');
+        const meta = `(${ANALYZER_MODEL}, liquidity ${liquidityStr}, prices ${pricesStr})`;
         if (result.validation.ok && result.validation.value.conviction > 0.65) {
           const v = result.validation.value;
           outcome = 'signal';
-          appContent = `Signal on "${cand.question}": ${v.side} @ ${v.suggested_price.toFixed(2)}, conviction ${v.conviction.toFixed(2)}. ${v.rationale}`;
+          appContent = `Analyzed "${cand.question}" ${meta}. Signal: ${v.side} @ ${v.suggested_price.toFixed(2)}, conviction ${v.conviction.toFixed(2)}. ${v.rationale}`;
         } else if (result.validation.ok) {
           const v = result.validation.value;
           outcome = 'skip-low-conviction';
           skipReason = `conviction ${v.conviction.toFixed(2)} below 0.65 threshold`;
-          appContent = `Considered "${cand.question}" but conviction ${v.conviction.toFixed(2)} below 0.65 threshold. ${v.rationale}`;
+          appContent = `Analyzed "${cand.question}" ${meta}. Conviction ${v.conviction.toFixed(2)} below 0.65 threshold. ${v.rationale}`;
         } else if (rawSide === 'NONE') {
           outcome = 'skip-none';
           skipReason = 'side=NONE — model found no edge';
-          appContent = `Skipped "${cand.question}". ${rawRationale}`;
+          appContent = `Analyzed "${cand.question}" ${meta}. Skipped — no edge. ${rawRationale}`;
         } else {
           outcome = 'skip-rejected';
           skipReason = result.validation.reason;
-          appContent = `Considered "${cand.question}" but ${result.validation.reason}. ${rawRationale}`;
+          appContent = `Analyzed "${cand.question}" ${meta}. ${result.validation.reason}. ${rawRationale}`;
         }
         const postThought = await supabase.from('thoughts').insert({
           scope: 'app',

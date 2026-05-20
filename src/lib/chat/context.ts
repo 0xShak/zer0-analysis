@@ -23,6 +23,7 @@ export type RecentMarket = {
   deterministic: boolean | null;
   classifier_confidence: number | null;
   last_analyzed_at: string | null;
+  last_seen_at: string | null;
 };
 
 export type RecentThought = {
@@ -40,12 +41,15 @@ export type ChatContext = {
 };
 
 // Context pieces fetched in parallel per prompt1 §5, extended with recent
-// analyzed markets + recent public thoughts so the bot has real grounding to
-// reference instead of hallucinating Polymarket markets.
+// classified-deterministic markets + recent public thoughts so the bot has
+// real grounding to reference instead of hallucinating Polymarket markets.
 //  - history: last 20 messages tied to either user_id or session_id.
 //  - trades: up to 10 still-open recommendations.
-//  - recentMarkets: last 24h of deterministic markets ZER0 has actually
-//    analyzed (top 15) — primary anti-hallucination source.
+//  - recentMarkets: last 24h of deterministic markets ZER0 has at least
+//    classified (top 15) — includes both deep-analyzed markets AND
+//    classified-but-not-yet-deep-analyzed ones, so the chat can talk about
+//    crypto/policy/election markets ZER0 has seen even before the brain
+//    forms a deep view. last_analyzed_yes_price may be NULL for the latter.
 //  - recentThoughts: last 10 public thoughts in 24h — continuity across
 //    conversations.
 //  - persona: cached ZER0.md content.
@@ -84,11 +88,11 @@ export async function loadChatContext(
       supabase
         .from('market_scans')
         .select(
-          'condition_id, question, last_analyzed_yes_price, category, deterministic, classifier_confidence, last_analyzed_at',
+          'condition_id, question, last_analyzed_yes_price, category, deterministic, classifier_confidence, last_analyzed_at, last_seen_at',
         )
         .eq('deterministic', true)
-        .gte('last_analyzed_at', since24hIso)
-        .order('last_analyzed_at', { ascending: false })
+        .gte('last_seen_at', since24hIso)
+        .order('last_seen_at', { ascending: false })
         .limit(15),
       supabase
         .from('thoughts')
@@ -131,6 +135,7 @@ export async function loadChatContext(
           ? Number(r.classifier_confidence)
           : null,
       last_analyzed_at: r.last_analyzed_at,
+      last_seen_at: r.last_seen_at,
     }),
   );
 
@@ -184,14 +189,19 @@ export function formatRecentWorkForSystem(
   const now = Date.now();
   const marketsBlock =
     markets.length === 0
-      ? '(no markets analyzed in the last 24h)'
+      ? '(no deterministic markets seen in the last 24h)'
       : markets
           .map((m) => {
             const q = m.question ?? '(unknown question)';
             const cat = m.category ?? 'uncategorised';
             const price =
               m.yes_price !== null ? m.yes_price.toFixed(3) : 'unknown';
-            return `- "${q}" (${cat}) — Yes priced at ${price}, analyzed ${relativeTime(m.last_analyzed_at, now)}`;
+            // Deep-analyzed rows have last_analyzed_at; classified-only rows
+            // fall back to last_seen_at. Verb shifts to match: "analyzed"
+            // vs "seen".
+            const verb = m.last_analyzed_at ? 'analyzed' : 'seen';
+            const ts = m.last_analyzed_at ?? m.last_seen_at;
+            return `- "${q}" (${cat}) — Yes priced at ${price}, ${verb} ${relativeTime(ts, now)}`;
           })
           .join('\n');
 
@@ -208,10 +218,11 @@ ${thoughtsBlock}`;
 }
 
 // Anti-hallucination instructions, appended to the bottom of the system
-// prompt. The user explicitly asked for this verbatim — keep it stable.
+// prompt.
 export const CHAT_GROUND_RULES = `## Ground rules for honesty
 
-- Only reference markets that appear in the 'What you've been doing' section above. If a user asks about a market not listed, say you haven't analyzed it recently rather than inventing one.
-- Never invent specific prices, dates, or question text. If you don't have the exact data, say so.
+- Only reference markets that appear in the 'What you've been doing' section above. If a user asks about a market not listed, say you haven't seen it recently rather than inventing one.
+- The list mixes markets you've deep-analyzed ('analyzed Xh ago') with ones you've only classified-and-watched ('seen Xh ago'). Be honest about the difference: for 'analyzed' markets you have a real view; for 'seen' markets you can name them and say you classified them as deterministic, but don't pretend to have a deep conviction call.
+- Never invent specific prices, dates, or question text. If you don't have the exact data, say so. For 'seen' markets the Yes price may show 'unknown' — say so rather than guessing.
 - Specific dates and prices in the context above are authoritative. Don't round or paraphrase them in ways that change meaning.
-- If you have zero analyzed markets to reference in the context, explicitly tell the user 'I haven't analyzed anything in the last 24 hours' rather than fabricating examples.`;
+- If you have zero markets to reference in the context, explicitly tell the user 'I haven't seen anything matching that in the last 24 hours' rather than fabricating examples.`;
