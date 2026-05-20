@@ -156,13 +156,13 @@ export const brainTick = inngest.createFunction(
 
     const classified = await step.run('classify', async () => {
       const groq = getGroq();
-      const targets = fresh.slice(0, 30);
-      // Parallelize with bounded concurrency. Sequential at 30 markets × ~1-2s
-      // per Groq call would exceed Vercel's per-invocation timeout (25s Hobby,
-      // 60s Pro) and freeze the whole brain-tick. With CONCURRENCY=10 the loop
-      // completes in ~3 batches (~3-5s wall-clock total). Groq Free is 30 RPM
-      // — 30 calls in a single second is still well inside that minute window.
-      const CONCURRENCY = 10;
+      // Classify breadth = 20 (not 30): per tick we ALSO fire 1 scan-summary
+      // + up to 5 per-analysis-summary Groq calls. Total ≤ 26 stays under
+      // free-tier 30 RPM in the sliding window between consecutive ticks. The
+      // Groq client is configured with maxRetries=0 so any stray 429 fails
+      // fast (returns null below) rather than burning the function budget.
+      const targets = fresh.slice(0, 20);
+      const CONCURRENCY = 5;
 
       async function classifyOne(
         m: (typeof targets)[number],
