@@ -205,17 +205,40 @@ export async function getBestExecutionPrice(
   tokenId: string,
   side: 'BUY' | 'SELL',
 ): Promise<number | null> {
+  const ctx = await getBookContext(tokenId, side);
+  return ctx?.bestPrice ?? null;
+}
+
+export interface BookContext {
+  bestPrice: number | null;
+  minOrderSize: number;
+}
+
+/**
+ * Like `getBestExecutionPrice` but also returns the market's
+ * `min_order_size` (in shares). Polymarket enforces this server-side; an
+ * order below the minimum is rejected with a vague error, so we'd rather
+ * guard at prepare time and tell the user to use a larger size.
+ */
+export async function getBookContext(
+  tokenId: string,
+  side: 'BUY' | 'SELL',
+): Promise<BookContext | null> {
   const client = await getClobClient();
   const book = await client.getOrderBook(tokenId);
-  const levels = side === 'BUY' ? book?.asks : book?.bids;
-  if (!Array.isArray(levels) || levels.length === 0) return null;
-  let best = side === 'BUY' ? Infinity : -Infinity;
-  for (const lvl of levels) {
-    const p = parseFloat(lvl?.price ?? '');
-    if (!Number.isFinite(p)) continue;
-    if (side === 'BUY' ? p < best : p > best) best = p;
+  if (!book) return null;
+  const levels = side === 'BUY' ? book.asks : book.bids;
+  let best: number = side === 'BUY' ? Infinity : -Infinity;
+  if (Array.isArray(levels)) {
+    for (const lvl of levels) {
+      const p = parseFloat(lvl?.price ?? '');
+      if (!Number.isFinite(p)) continue;
+      if (side === 'BUY' ? p < best : p > best) best = p;
+    }
   }
-  return Number.isFinite(best) ? best : null;
+  const bestPrice = Number.isFinite(best) ? best : null;
+  const minOrderSize = parseFloat(book.min_order_size ?? '') || 0;
+  return { bestPrice, minOrderSize };
 }
 
 export { OrderType };

@@ -123,12 +123,16 @@ export async function POST(req: NextRequest) {
   try {
     // FAK (Fill-And-Kill / immediate-or-cancel): match whatever's possible
     // against the current book at this price-or-better, then cancel the
-    // unfilled remainder. Combined with the cross-the-spread pricing the
-    // prepare route now sets, this makes every submitted order either
-    // settle on-chain immediately or fail with a real error — no resting
-    // limit-order limbo, which means every successful submit produces a
-    // visible Polygonscan tx on the CTF Exchange contract.
+    // unfilled remainder. There is NO resting state for FAK — anything
+    // that returns success=true with no transactionsHashes is a kill.
     clobResult = await postSignedOrder(sdkOrder, OrderType.FAK);
+    // Always log so we can diagnose "submitted with no on-chain action"
+    // cases by reading Vercel logs.
+    console.log('[trade/submit] CLOB response', {
+      tradeId,
+      orderType: 'FAK',
+      response: clobResult,
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error('[trade/submit] CLOB error', { tradeId, message });
@@ -196,11 +200,11 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  // If Polymarket matched the order on submit, the response carries
-  // status='matched' and/or a non-empty transactionsHashes array. Surface
-  // that as 'filled' so the user can see the trade actually settled. A
-  // resting limit order returns status='live' (or omits status) — we keep
-  // those as 'submitted'.
+  // Classify the FAK response three ways:
+  //   matched  → on-chain settlement happened, status='filled'
+  //   killed   → API accepted but matcher couldn't fill, status='cancelled'
+  //   (the rejected case was already handled above via success===false)
+  // FAK has no resting state, so any non-matched success is a kill.
   const clobStatus =
     typeof resultObj.status === 'string' ? resultObj.status : '';
   const txHashes = Array.isArray(resultObj.transactionsHashes)
@@ -208,17 +212,26 @@ export async function POST(req: NextRequest) {
         (h): h is string => typeof h === 'string',
       )
     : [];
-  const matched = clobStatus === 'matched' || txHashes.length > 0;
+  const matched =
+    clobStatus === 'matched' || clobStatus === 'filled' || txHashes.length > 0;
   const now = new Date().toISOString();
+
+  const finalStatus = matched ? 'filled' : 'cancelled';
+  const finalReason = matched
+    ? null
+    : `unmatched: status="${clobStatus || 'unknown'}", makingAmount=${
+        resultObj.makingAmount ?? '?'
+      }, takingAmount=${resultObj.takingAmount ?? '?'}`;
 
   const { error: updateErr } = await supabase
     .from('trades')
     .update({
-      status: matched ? 'filled' : 'submitted',
+      status: finalStatus,
       clob_order_id: clobOrderId,
       signed_order: sdkOrder as unknown as Json,
       submitted_at: now,
       filled_at: matched ? now : null,
+      failure_reason: finalReason,
     })
     .eq('id', tradeId);
   if (updateErr) {
@@ -234,7 +247,8 @@ export async function POST(req: NextRequest) {
   return Response.json({
     tradeId,
     clobOrderId,
-    status: matched ? 'filled' : 'submitted',
+    status: finalStatus,
+    reason: finalReason,
     submittedAt: now,
     txHashes,
   });

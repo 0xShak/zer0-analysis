@@ -11,7 +11,7 @@ import { rateLimit, rateLimitKey } from '@/lib/trades/rate-limit';
 import { PrepareBody } from '@/lib/trades/validators';
 import {
   buildTypedData,
-  getBestExecutionPrice,
+  getBookContext,
   getMarketMeta,
 } from '@/lib/polymarket/clob';
 
@@ -135,9 +135,14 @@ export async function POST(req: NextRequest) {
   // that order will likely no-fill but at least won't crash prepare.
   let price = recPrice;
   let bookPrice: number | null = null;
+  let minOrderSize = 0;
   try {
-    bookPrice = await getBestExecutionPrice(rec.token_id, rec.side);
-    if (bookPrice !== null) price = bookPrice;
+    const ctx = await getBookContext(rec.token_id, rec.side);
+    if (ctx) {
+      bookPrice = ctx.bestPrice;
+      minOrderSize = ctx.minOrderSize;
+      if (bookPrice !== null) price = bookPrice;
+    }
   } catch (err) {
     console.warn('[trade/prepare] order-book lookup failed', {
       tokenId: rec.token_id,
@@ -151,6 +156,25 @@ export async function POST(req: NextRequest) {
   // execution price (not the recommendation price) so shares-vs-USDC stay
   // consistent with what will actually be quoted on-chain.
   const sizeShares = sizeUsd / price;
+
+  // Guard against orders Polymarket will reject for being too small. Their
+  // per-market min_order_size (returned from /book) is enforced server-
+  // side; failing here gives the user an actionable message before any
+  // wallet popup, and prevents the post-submit "cancelled (unmatched)"
+  // case that we can't easily distinguish from a real no-fill.
+  if (minOrderSize > 0 && sizeShares < minOrderSize) {
+    const suggestedMinUsd =
+      Math.ceil(minOrderSize * price * 100) / 100;
+    return Response.json(
+      {
+        error: 'below_min_size',
+        detail: `market requires at least ${minOrderSize} shares per order — try a USD size of $${suggestedMinUsd.toFixed(2)} or more`,
+        minOrderSize,
+        suggestedMinUsd,
+      },
+      { status: 400 },
+    );
+  }
 
   // ---- build typed data ----
   let typedData;

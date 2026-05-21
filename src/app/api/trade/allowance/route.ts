@@ -12,6 +12,7 @@ import { createAdminClient } from '@/lib/supabase/admin';
 import { clientIpFromHeaders } from '@/lib/chat/fingerprint';
 import { rateLimit, rateLimitKey } from '@/lib/trades/rate-limit';
 import {
+  AllRpcsFailedError,
   getCollateralAllowance,
   isCtfApprovedForAll,
 } from '@/lib/polymarket/allowance';
@@ -70,11 +71,21 @@ export async function GET(req: NextRequest) {
       isCtfApprovedForAll(owner, spender),
     ]);
   } catch (err) {
-    console.error('[trade/allowance] RPC read failed', err);
-    return Response.json(
-      { error: 'rpc_unavailable' },
-      { status: 503 },
-    );
+    // All fallback RPCs failed. Return 200 with `unknown: true` so the
+    // client can decide whether to surface a soft warning vs hard error;
+    // returning 503 here meant the user got NO approval prompt and the
+    // order silently proceeded without allowance.
+    if (err instanceof AllRpcsFailedError) {
+      console.warn('[trade/allowance] all RPCs failed', err.attempts);
+    } else {
+      console.error('[trade/allowance] RPC read failed', err);
+    }
+    return Response.json({
+      unknown: true,
+      usdc: { spender, token: USDC_E_ADDRESS },
+      ctf: { spender, token: CONDITIONAL_TOKENS },
+      exchange: { negRisk },
+    });
   }
 
   return Response.json({

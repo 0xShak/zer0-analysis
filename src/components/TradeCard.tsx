@@ -32,6 +32,7 @@ type ApprovalState = {
   ctfOk: boolean;
   spender: string;
   negRisk: boolean;
+  unknown?: boolean;
 };
 
 // Treat any non-zero USDC allowance as "approved" — the in-app flow only
@@ -56,10 +57,12 @@ export function TradeCard({
     | 'signing'
     | 'submitting'
     | 'done'
+    | 'cancelled'
     | 'error'
   >('idle');
   const [error, setError] = useState<string | null>(null);
   const [clobOrderId, setClobOrderId] = useState<string | null>(null);
+  const [cancelReason, setCancelReason] = useState<string | null>(null);
   const [approval, setApproval] = useState<ApprovalState | null>(null);
   // Size is in USD (server caps at $1-$100 via PrepareBody). The wallet
   // popup will show this converted to share-denominated maker/taker amounts.
@@ -101,14 +104,28 @@ export function TradeCard({
         if (cancelled) return;
         if (!res.ok) return;
         const body = (await res.json()) as {
-          usdc: { allowance: string; spender: string };
-          ctf: { approved: boolean; spender: string };
+          unknown?: boolean;
+          usdc: { allowance?: string; spender: string };
+          ctf: { approved?: boolean; spender: string };
           exchange: { negRisk: boolean };
         };
         if (cancelled) return;
+        if (body.unknown) {
+          // All RPCs failed. Default to "approval unknown" — UI will show a
+          // soft notice and the user can still try execute; the worst case
+          // is one extra wallet popup when the order is actually rejected.
+          setApproval({
+            usdcOk: false,
+            ctfOk: false,
+            spender: body.usdc.spender,
+            negRisk: body.exchange.negRisk,
+            unknown: true,
+          });
+          return;
+        }
         let allowanceBig: bigint;
         try {
-          allowanceBig = BigInt(body.usdc.allowance);
+          allowanceBig = BigInt(body.usdc.allowance ?? '0');
         } catch {
           allowanceBig = BigInt(0);
         }
@@ -145,6 +162,7 @@ export function TradeCard({
     }
     setError(null);
     setClobOrderId(null);
+    setCancelReason(null);
     try {
       // Polymarket is on Polygon (chainId 137 / 0x89). The EIP-712 domain we
       // ask the wallet to sign also encodes 137 — if the wallet is on a
@@ -263,7 +281,12 @@ export function TradeCard({
         body: JSON.stringify({ tradeId, signedOrder }),
       });
       const submitBody = (await submit.json().catch(() => null)) as
-        | { tradeId: string; clobOrderId: string | null; status: string }
+        | {
+            tradeId: string;
+            clobOrderId: string | null;
+            status: string;
+            reason?: string | null;
+          }
         | { error: string; reason?: string }
         | null;
       if (!submit.ok || !submitBody || 'error' in submitBody) {
@@ -274,7 +297,15 @@ export function TradeCard({
         throw new Error(`submit failed: ${reason}`);
       }
       setClobOrderId(submitBody.clobOrderId);
-      setStatus('done');
+      // Polymarket-side classification: 'filled' means on-chain settlement
+      // happened; 'cancelled' means the FAK didn't match (book moved,
+      // missing allowance, etc.). Either way the order is final.
+      if (submitBody.status === 'cancelled') {
+        setCancelReason(submitBody.reason ?? 'order did not match the book');
+        setStatus('cancelled');
+      } else {
+        setStatus('done');
+      }
       // Tell RecentTradesBubble (or any other listener) to refresh — the
       // trades-list endpoint reads from the trades table the submit route
       // just wrote to, so the new row should appear on the next fetch.
@@ -357,7 +388,12 @@ export function TradeCard({
         </span>
       </div>
 
-      {setupRequired && status === 'idle' ? (
+      {approval?.unknown && status === 'idle' ? (
+        <p className="mb-2 rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1.5 text-[10px] leading-snug text-amber-200">
+          couldn&apos;t verify wallet approvals (RPC timed out). proceeding may
+          require an extra wallet popup if the trade needs an approve tx.
+        </p>
+      ) : setupRequired && status === 'idle' ? (
         <p className="mb-2 rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1.5 text-[10px] leading-snug text-amber-200">
           first-time setup: clicking execute will prompt{' '}
           {needsUsdcApproval && needsCtfApproval
@@ -378,13 +414,18 @@ export function TradeCard({
           ? setupRequired
             ? 'approve & execute'
             : 'execute'
-          : status === 'error'
-            ? 'retry'
+          : status === 'error' || status === 'cancelled'
+            ? 'try again'
             : status}
       </button>
       {status === 'done' && clobOrderId ? (
         <p className="mt-2 truncate font-mono text-[10px] text-emerald-300/80">
-          order {clobOrderId}
+          filled · order {clobOrderId}
+        </p>
+      ) : null}
+      {status === 'cancelled' ? (
+        <p className="mt-2 text-[10px] leading-snug text-amber-300">
+          didn&apos;t fill: {cancelReason ?? 'order was unmatched'}
         </p>
       ) : null}
       {error ? (
