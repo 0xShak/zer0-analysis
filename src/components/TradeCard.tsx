@@ -6,6 +6,13 @@ import {
   sendSetApprovalForAllCtf,
   waitForReceipt,
 } from '@/lib/web3/approve';
+import {
+  getOrCreatePolymarketClient,
+  hasCachedCreds,
+  pollOrderFromBrowser,
+  submitOrderFromBrowser,
+} from '@/lib/polymarket/clob-browser';
+import type { SignedOrder } from '@polymarket/clob-client';
 
 type EthereumProvider = {
   request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
@@ -55,6 +62,7 @@ export function TradeCard({
     | 'approving-ctf'
     | 'preparing'
     | 'signing'
+    | 'deriving-keys'
     | 'submitting'
     | 'done'
     | 'cancelled'
@@ -81,6 +89,7 @@ export function TradeCard({
     status === 'approving-ctf' ||
     status === 'preparing' ||
     status === 'signing' ||
+    status === 'deriving-keys' ||
     status === 'submitting';
   const needsUsdcApproval = !!approval && !approval.usdcOk;
   const needsCtfApproval =
@@ -333,41 +342,124 @@ export function TradeCard({
       // We just append the signature.
       const signedOrder = { ...typedData.message, signature };
 
-      setStatus('submitting');
-      const submit = await fetch('/api/trade/submit', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ tradeId, signedOrder }),
-      });
-      const submitBody = (await submit.json().catch(() => null)) as
-        | {
-            tradeId: string;
-            clobOrderId: string | null;
-            status: string;
-            reason?: string | null;
-          }
-        | { error: string; reason?: string }
-        | null;
-      if (!submit.ok || !submitBody || 'error' in submitBody) {
-        const reason =
-          submitBody && 'error' in submitBody
-            ? `${submitBody.error}${submitBody.reason ? `: ${submitBody.reason}` : ''}`
-            : `status ${submit.status}`;
-        throw new Error(`submit failed: ${reason}`);
+      // Initialize Polymarket browser client. First-time per EOA prompts a
+      // one-off API-key derivation popup (EIP-712); subsequent trades reuse
+      // the cached HMAC creds from localStorage.
+      if (!hasCachedCreds(userAddress)) {
+        setStatus('deriving-keys');
       }
-      setClobOrderId(submitBody.clobOrderId);
-      // Polymarket-side classification: 'filled' means on-chain settlement
-      // happened; 'cancelled' means the FAK didn't match (book moved,
-      // missing allowance, etc.). Either way the order is final.
-      if (submitBody.status === 'cancelled') {
-        setCancelReason(submitBody.reason ?? 'order did not match the book');
-        setStatus('cancelled');
-      } else {
+      const pmClient = await getOrCreatePolymarketClient(ethereum, userAddress);
+
+      setStatus('submitting');
+      const clobResult = await submitOrderFromBrowser(
+        pmClient,
+        signedOrder as unknown as SignedOrder,
+      );
+
+      // Classify the response. The SDK's http-helpers wraps HTTP 4xx into
+      // { error, status }, separate from soft rejections at { success: false }.
+      // Both mean "Polymarket refused the order". Other cases:
+      //   { success: true, orderID, ... }          → accepted, may or may not be matched yet
+      //   anything weird                            → treat as rejected for safety
+      const resultObj =
+        typeof clobResult === 'object' && clobResult !== null
+          ? (clobResult as Record<string, unknown>)
+          : {};
+      const httpErrorMsg =
+        typeof resultObj.error === 'string' && resultObj.error
+          ? resultObj.error
+          : null;
+      const isSoftReject = resultObj.success === false;
+      if (httpErrorMsg || isSoftReject) {
+        const reason =
+          (typeof resultObj.errorMsg === 'string' && resultObj.errorMsg) ||
+          httpErrorMsg ||
+          'CLOB rejected order';
+        await fetch('/api/trade/notify', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            tradeId,
+            outcome: { kind: 'rejected', reason },
+          }),
+        });
+        throw new Error(`submit failed: clob_rejected: ${reason}`);
+      }
+
+      const apiClobOrderId =
+        (typeof resultObj.orderID === 'string' && resultObj.orderID) ||
+        (typeof resultObj.orderId === 'string' && resultObj.orderId) ||
+        null;
+      const inlineStatus =
+        typeof resultObj.status === 'string' ? resultObj.status : '';
+      const inlineTxHashes = Array.isArray(resultObj.transactionsHashes)
+        ? (resultObj.transactionsHashes as unknown[]).filter(
+            (h): h is string => typeof h === 'string',
+          )
+        : [];
+      const inlineMatched =
+        inlineStatus === 'matched' ||
+        inlineStatus === 'filled' ||
+        inlineTxHashes.length > 0;
+
+      let matched = inlineMatched;
+      let polledStatus = inlineStatus;
+      let polledSizeMatched = '';
+      if (!inlineMatched && apiClobOrderId) {
+        // Polymarket's postOrder is an ACK; match/settlement is async.
+        // Poll getOrder until status leaves LIVE (or we time out).
+        const resolution = await pollOrderFromBrowser(pmClient, apiClobOrderId);
+        if (resolution.kind === 'matched') {
+          matched = true;
+          polledStatus = resolution.status || 'MATCHED';
+          polledSizeMatched = resolution.sizeMatched;
+        } else if (resolution.kind === 'cancelled') {
+          polledStatus = resolution.status || 'CANCELED';
+          polledSizeMatched = resolution.sizeMatched;
+        } else {
+          polledStatus = resolution.status || 'TIMEOUT';
+          polledSizeMatched = resolution.sizeMatched;
+        }
+      }
+
+      setClobOrderId(apiClobOrderId);
+      if (matched) {
+        await fetch('/api/trade/notify', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            tradeId,
+            outcome: {
+              kind: 'filled',
+              clobOrderId: apiClobOrderId,
+              txHashes: inlineTxHashes,
+              sizeMatched: polledSizeMatched,
+              clobStatus: polledStatus,
+            },
+          }),
+        });
         setStatus('done');
+      } else {
+        const reason = `unmatched: status="${polledStatus || 'unknown'}", size_matched=${
+          polledSizeMatched || '0'
+        }`;
+        await fetch('/api/trade/notify', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            tradeId,
+            outcome: {
+              kind: 'cancelled',
+              clobOrderId: apiClobOrderId,
+              reason,
+            },
+          }),
+        });
+        setCancelReason(reason);
+        setStatus('cancelled');
       }
       // Tell RecentTradesBubble (or any other listener) to refresh — the
-      // trades-list endpoint reads from the trades table the submit route
-      // just wrote to, so the new row should appear on the next fetch.
+      // notify endpoint just updated the trades row.
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent('zer0:trade-submitted'));
       }

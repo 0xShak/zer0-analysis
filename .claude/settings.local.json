@@ -21,7 +21,9 @@
       "Bash(findstr /R /S \"from.*thoughts\" src\\\\app\\\\api)",
       "Bash(findstr /v node_modules)",
       "PowerShell(ls \"C:\\\\Users\\\\ReachElysium\\\\projects\\\\zer0-backend\\\\node_modules\\\\.pnpm\\\\\" | Where-Object {$_ -match \"polymarket\"})",
-      "PowerShell(head *)"
+      "PowerShell(head *)",
+      "Bash(rm src/app/api/trade/submit/route.ts)",
+      "Bash(rmdir src/app/api/trade/submit)"
     ]
   }
 }

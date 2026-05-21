@@ -1,0 +1,382 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>zer0 · Telegram v2 — design research & context</title>
+<style>
+  :root {
+    --bg: #0b0d10;
+    --fg: #e6e8eb;
+    --muted: #8a9099;
+    --accent: #5eead4;
+    --accent-dim: rgba(94, 234, 212, 0.18);
+    --warn: #fbbf24;
+    --rose: #fb7185;
+    --rule: rgba(255,255,255,0.08);
+    --card: rgba(255,255,255,0.02);
+    --code-bg: rgba(255,255,255,0.04);
+  }
+  html { background: var(--bg); }
+  body {
+    margin: 0;
+    padding: 48px 16px 96px;
+    font: 15px/1.65 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    color: var(--fg);
+    max-width: 880px;
+    margin-inline: auto;
+  }
+  h1, h2, h3, h4 { font-weight: 600; letter-spacing: -0.01em; }
+  h1 { font-size: 30px; margin: 0 0 6px; }
+  h2 { font-size: 21px; margin: 38px 0 12px; border-top: 1px solid var(--rule); padding-top: 28px; }
+  h3 { font-size: 17px; margin: 26px 0 10px; }
+  h4 { font-size: 14px; margin: 20px 0 6px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+  p { margin: 0 0 14px; color: var(--fg); }
+  a { color: var(--accent); }
+  code, pre {
+    font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    background: var(--code-bg);
+    border-radius: 4px;
+  }
+  code { padding: 1px 5px; }
+  pre {
+    padding: 12px 14px;
+    overflow-x: auto;
+    border: 1px solid var(--rule);
+    background: var(--code-bg);
+    border-radius: 8px;
+  }
+  ul, ol { padding-left: 22px; margin: 0 0 14px; }
+  li { margin: 4px 0; }
+  .meta { color: var(--muted); font-size: 13px; }
+  .tag {
+    display: inline-block;
+    font: 11px/1 ui-monospace, monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    padding: 4px 8px;
+    border-radius: 999px;
+    background: var(--accent-dim);
+    color: var(--accent);
+    margin-right: 6px;
+  }
+  .tag.warn { background: rgba(251,191,36,0.15); color: var(--warn); }
+  .tag.rose { background: rgba(251,113,133,0.15); color: var(--rose); }
+  .card {
+    border: 1px solid var(--rule);
+    background: var(--card);
+    padding: 16px 18px;
+    border-radius: 10px;
+    margin: 14px 0;
+  }
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+    margin: 14px 0;
+  }
+  @media (max-width: 640px) { .grid { grid-template-columns: 1fr; } }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+    margin: 12px 0;
+  }
+  th, td {
+    border-bottom: 1px solid var(--rule);
+    padding: 8px 10px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { font-weight: 600; color: var(--muted); }
+  hr { border: none; border-top: 1px solid var(--rule); margin: 32px 0; }
+  blockquote {
+    border-left: 2px solid var(--accent);
+    padding: 6px 14px;
+    margin: 14px 0;
+    color: var(--muted);
+    background: var(--code-bg);
+    border-radius: 0 6px 6px 0;
+  }
+  .kbd {
+    display: inline-block;
+    padding: 1px 6px;
+    font-family: ui-monospace, monospace;
+    font-size: 12px;
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    background: var(--code-bg);
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <p class="meta">zer0 internal · research document · last updated 2026-05-21</p>
+  <h1>Telegram v2 — Conversational Trading</h1>
+  <p>Bring the in-app trading flow to Telegram. User asks zer0 to analyze a market in chat, then says "buy me X shares" — zer0 routes the trade to Polymarket and triggers a wallet signature on the user's phone.</p>
+  <p>
+    <span class="tag">SCOPE: design</span>
+    <span class="tag">NEXT FEATURE</span>
+    <span class="tag warn">DEPENDS ON: client-side submit (just landed)</span>
+  </p>
+</header>
+
+<h2>1. What we're building</h2>
+
+<p>An end-to-end conversational trading flow inside Telegram, with these capabilities:</p>
+
+<ul>
+  <li><strong>Connect</strong>. User runs <code>/connect</code> in the zer0 Telegram bot. Bot generates a WalletConnect v2 pairing URI; user opens it via deep link into MetaMask Mobile (or any WalletConnect-compatible wallet). Session is persisted server-side, keyed by Telegram user ID.</li>
+  <li><strong>Ask</strong>. User: "what do you think about the Spencer Pratt LA mayor market?" Bot fetches the market via Polymarket Gamma, runs the same superforecaster analysis the in-app brain-tick uses, replies with the rationale and current edge.</li>
+  <li><strong>Trade</strong>. User: "buy me $10 of YES" or "sell 20 shares at market". Bot parses the intent via Groq/OpenAI, builds the EIP-712 typed-data payload, sends it via the WalletConnect session to the user's wallet. User signs in MetaMask Mobile. Bot routes the signed order to Polymarket's CLOB.</li>
+  <li><strong>Confirm</strong>. Bot replies with the outcome — order ID, fill price, on-chain tx link — same surface the in-app RecentTradesBubble shows today.</li>
+</ul>
+
+<div class="card">
+  <h4>Why this matters for the demo</h4>
+  <p>The in-app web flow proves "agent → signed order → on-chain fill". The Telegram flow proves a more compelling story: <strong>natural language → autonomous agent reasoning → on-chain fill, from your phone, anywhere</strong>. It's the one-line pitch the demo needs.</p>
+</div>
+
+<h2>2. Existing scaffolding we reuse</h2>
+
+<p>We're not starting from zero. The relevant pieces already exist:</p>
+
+<table>
+<thead><tr><th>Component</th><th>Path</th><th>What it does today</th></tr></thead>
+<tbody>
+<tr>
+  <td>Telegram bot</td>
+  <td><code>src/telegram-bot/</code></td>
+  <td>Grammy-based bot. Already handles message routing, user identity, outbound messages. Just need to add commands and intent handlers.</td>
+</tr>
+<tr>
+  <td>Order preparation</td>
+  <td><code>src/app/api/trade/prepare/route.ts</code></td>
+  <td>Server endpoint that builds EIP-712 typed-data for a recommendation. Calls Gamma for market meta and Polymarket's read-only order book. Geoblock doesn't hit it (reads are not geoblocked).</td>
+</tr>
+<tr>
+  <td>Order classification</td>
+  <td><code>src/app/api/trade/notify/route.ts</code></td>
+  <td>Just shipped. Records the outcome of a client-side submission. Reusable verbatim by the bot once submission is happening from a non-blocked region.</td>
+</tr>
+<tr>
+  <td>Polymarket CLOB helpers</td>
+  <td><code>src/lib/polymarket/clob.ts</code>, <code>clob-browser.ts</code></td>
+  <td>Server has <code>getBestExecutionPrice</code>, <code>getBookContext</code>, <code>pollOrderResolution</code>. Browser-side has the full submit + poll. Either can be invoked from the bot depending on where the bot runs.</td>
+</tr>
+<tr>
+  <td>Brain-tick analyzer</td>
+  <td><code>src/lib/inngest/functions/brain-tick.ts</code> + <code>src/lib/prompts/superforecaster.ts</code></td>
+  <td>The same OpenAI/Groq prompts the in-app analyzer uses. Reusable for on-demand analysis when the user asks "what do you think about X?".</td>
+</tr>
+<tr>
+  <td>Trade recommendation table</td>
+  <td><code>trade_recommendations</code> (supabase)</td>
+  <td>Bot can insert on-demand recommendations the same way the force-buy CLI does, then reuse the existing prepare/sign/submit pipeline.</td>
+</tr>
+</tbody>
+</table>
+
+<h2>3. WalletConnect v2 — the central piece</h2>
+
+<p>The crux is enabling the Telegram bot to request signatures from the user's mobile wallet. WalletConnect v2 is the standard protocol for this. Two relevant SDKs:</p>
+
+<ul>
+  <li><a href="https://docs.reown.com/walletkit/overview" target="_blank">@reown/walletkit</a> — newer, Reown-maintained successor to <code>@walletconnect/web3wallet</code>. Bot-side acts as a dApp client requesting signatures from wallets.</li>
+  <li><a href="https://docs.reown.com/appkit/overview" target="_blank">@reown/appkit</a> — higher-level, mostly for browser apps. We want the lower-level <strong>Sign API</strong> client (<code>@walletconnect/sign-client</code> or its v2.x successor).</li>
+</ul>
+
+<h4>Flow at the protocol level</h4>
+<ol>
+  <li>Bot calls <code>signClient.connect({ requiredNamespaces: { eip155: { chains: ['eip155:137'], methods: ['eth_signTypedData_v4', 'eth_sendTransaction', 'personal_sign'], events: ['chainChanged','accountsChanged'] } } })</code>. Returns a <code>uri</code>.</li>
+  <li>Bot sends the URI to the user as a Telegram message — both as a tappable deep-link (<code>https://metamask.app.link/wc?uri=…</code>) and a QR code image. MetaMask Mobile (or any WC2 wallet) opens it.</li>
+  <li>User approves the pairing in their wallet. Bot receives <code>session_connect</code> event with the user's EOA address.</li>
+  <li>Bot persists <code>(telegram_user_id → session_topic, eoa_address)</code> in supabase.</li>
+  <li>When the user wants to trade, bot calls <code>signClient.request({ topic, chainId: 'eip155:137', request: { method: 'eth_signTypedData_v4', params: [eoa, typedDataJson] } })</code>.</li>
+  <li>Wallet popup appears on the user's phone. Approve → bot receives the signature.</li>
+  <li>Bot constructs the signed order and posts it to Polymarket.</li>
+</ol>
+
+<h4>Pairing UX in Telegram</h4>
+<p>Telegram doesn't render QR codes natively, but it does render images. The bot can:</p>
+<ol>
+  <li>Send the deep link as plain text (<code>https://metamask.app.link/wc?uri=wc:...</code>) — tappable on mobile, opens MetaMask Mobile directly.</li>
+  <li>Generate a QR code server-side (<code>qrcode</code> npm package) and send as a photo for desktop Telegram users.</li>
+  <li>Include a "Copy URI" inline button for power users.</li>
+</ol>
+
+<div class="card">
+  <h4>Why this is the right protocol</h4>
+  <p>WalletConnect v2 is wallet-agnostic. The user doesn't need MetaMask specifically — Rainbow, Trust Wallet, Coinbase Wallet, etc. all support WC2. The bot stays decoupled from any particular wallet vendor. It also handles session refresh, multi-chain, and disconnect events out of the box.</p>
+</div>
+
+<h2>4. Intent parsing — natural language to trade</h2>
+
+<p>The user says things like:</p>
+<ul>
+  <li>"buy 10 shares of YES on Spencer Pratt LA mayor"</li>
+  <li>"sell $5 of NO at market on the Iran market"</li>
+  <li>"what's my position on the FIFA World Cup market?"</li>
+  <li>"close my Bitcoin $150k position"</li>
+</ul>
+
+<p>We use Groq's <code>llama-3.1-8b-instant</code> (already in deps, already used by the classifier in brain-tick) with structured output to parse this into:</p>
+
+<pre><code>{
+  "intent": "open_trade" | "close_trade" | "analyze_market" | "status",
+  "market_query": "Spencer Pratt LA mayor" | null,
+  "side": "BUY" | "SELL" | null,
+  "size_kind": "shares" | "usd" | null,
+  "size_value": 10 | 5 | null,
+  "outcome": "YES" | "NO" | null,
+  "confidence": 0.0-1.0
+}</code></pre>
+
+<p>If <code>confidence &lt; 0.7</code> or required fields are missing, bot asks a clarifying question instead of executing. Important guardrail: <strong>always echo the intent back to the user before signing</strong>. Bot replies:</p>
+
+<blockquote>"OK — buying ~10 YES shares of <em>Spencer Pratt LA mayor</em> at current ask of $0.014 (≈$0.14 total). Approving in your wallet now."</blockquote>
+
+<p>Then the wallet popup. The user has a final visual confirmation in the wallet itself (MakerAmount/TakerAmount), which is the actual security guarantee — the bot can lie about what it's signing but the wallet won't.</p>
+
+<h2>5. Trade execution paths — where the bot lives</h2>
+
+<p>The bot still needs to <strong>post the signed order to Polymarket</strong>. That's the same POST that gets geoblocked on Vercel iad1. Three options:</p>
+
+<div class="grid">
+  <div class="card">
+    <h4>A. Bot on a non-blocked host</h4>
+    <p>If the Telegram bot runs on Oracle Cloud, Fly.io, Railway, etc. in an allowed region (Ireland, Brazil, Sweden, etc.), it can post directly. The relay key pattern (<code>RELAY_PRIVATE_KEY</code> for API auth) works as-is.</p>
+    <p><strong>Cleanest</strong>. The bot is server-side anyway — no client-side complexity to worry about.</p>
+    <p class="meta">Comments in <code>src/lib/polymarket/clob.ts</code> already mention "Oracle Cloud workers" — that may be where the bot is intended to run.</p>
+  </div>
+  <div class="card">
+    <h4>B. Bot uses user's own API keys</h4>
+    <p>Mirror the browser pattern: derive a Polymarket API key per user from their EOA signature (which we'd request once via WalletConnect during /connect). Post on their behalf using their HMAC creds. User's IP isn't relevant because the bot's IP is what hits Polymarket — same problem as A.</p>
+    <p>Useful for accountability / per-user rate limits, but doesn't solve geoblock. <strong>Skip unless we also need the per-user auth for other reasons.</strong></p>
+  </div>
+</div>
+
+<div class="card">
+  <h4>C. Bot delegates to a web view</h4>
+  <p>Bot opens a Telegram WebApp (mini-app) for the user to confirm; the WebApp runs the same client-side flow we just built. User signs in WebApp's wallet context, post happens from the browser.</p>
+  <p>Breaks the "in chat" narrative — the user has to leave Telegram chat. <strong>Worse demo.</strong></p>
+</div>
+
+<p><strong>Recommendation: A.</strong> The bot already needs a server — provision it in Dublin (Fly.io free tier, or Oracle ARM VM) and we're done.</p>
+
+<h2>6. Schema additions</h2>
+
+<p>A few new supabase columns/tables to support per-user WalletConnect sessions:</p>
+
+<pre><code>create table public.tg_wc_sessions (
+  telegram_user_id bigint primary key,
+  session_topic text not null,
+  eoa_address text not null,
+  expires_at timestamptz not null,
+  created_at timestamptz default now(),
+  last_used_at timestamptz default now()
+);
+
+-- (optional) per-user telegram→eoa map for /api/trade/list lookups
+create table public.tg_user_wallets (
+  telegram_user_id bigint primary key,
+  primary_eoa text not null,
+  created_at timestamptz default now()
+);</code></pre>
+
+<p>The existing <code>trades</code> table already has <code>user_address</code>, so per-user trade history works without modification — bot just inserts trades with the user's EOA address and the existing RecentTradesBubble logic (if we ever surface this in the web app) would pick it up automatically.</p>
+
+<h2>7. Concrete implementation plan</h2>
+
+<h4>Files to create</h4>
+<ul>
+  <li><code>src/telegram-bot/walletconnect.ts</code> — WC2 SignClient singleton; pairing, session storage, request helpers.</li>
+  <li><code>src/telegram-bot/intents.ts</code> — Groq-backed natural-language → intent classifier with confidence + schema-validated output.</li>
+  <li><code>src/telegram-bot/commands/connect.ts</code> — handles <code>/connect</code>; generates pairing URI + QR.</li>
+  <li><code>src/telegram-bot/commands/trade.ts</code> — handles trade intents; builds typedData via existing prepare logic; sends to wallet via WC; submits to Polymarket; notifies user.</li>
+  <li><code>src/telegram-bot/commands/analyze.ts</code> — runs the superforecaster prompt on demand; replies with rationale + suggested action.</li>
+  <li><code>supabase/migrations/0007_tg_wc_sessions.sql</code> — new tables above.</li>
+</ul>
+
+<h4>Files to modify</h4>
+<ul>
+  <li><code>src/telegram-bot/handlers.ts</code> — route incoming messages to <code>analyze.ts</code> / <code>trade.ts</code> based on intent.</li>
+  <li><code>src/telegram-bot/db.ts</code> — add session storage helpers.</li>
+  <li><code>package.json</code> — add <code>@walletconnect/sign-client</code> and <code>qrcode</code>.</li>
+</ul>
+
+<h4>Estimated effort</h4>
+<table>
+<thead><tr><th>Phase</th><th>Work</th><th>Estimate</th></tr></thead>
+<tbody>
+<tr><td>1</td><td>WalletConnect plumbing: pairing, session storage, request/respond, error handling</td><td>1 day</td></tr>
+<tr><td>2</td><td>Intent parsing + market disambiguation</td><td>0.5 day</td></tr>
+<tr><td>3</td><td>Trade execution wiring: prepare → WC sign → submit → notify</td><td>0.5 day</td></tr>
+<tr><td>4</td><td>Analyze command (runs existing prompt on-demand)</td><td>0.25 day</td></tr>
+<tr><td>5</td><td>Bot hosting in non-blocked region + secrets setup</td><td>0.25 day</td></tr>
+<tr><td>6</td><td>Polish, error states, conversational quirks</td><td>0.5 day</td></tr>
+<tr><td colspan="2" style="text-align: right;"><strong>Total</strong></td><td><strong>~3 days</strong></td></tr>
+</tbody>
+</table>
+
+<h2>8. Open questions to resolve before building</h2>
+
+<ol>
+  <li><strong>Where does the bot already run?</strong> If it's on Oracle Cloud, what region? If it's a Vercel function, it's geoblocked the same way the web app is — we'll need to move it.</li>
+  <li><strong>Should the bot derive its own API keys per Telegram user (Option B above), or use the relay's single API key (Option A)?</strong> The relay key is simpler; per-user keys give us better audit trails and per-user rate limit isolation on Polymarket's side. Lean simple for v1.</li>
+  <li><strong>Session expiry policy.</strong> WC2 sessions have a max lifetime (typically 7 days). Renewal: silent re-pairing, or require <code>/connect</code> again? Silent renewal is nicer but adds complexity.</li>
+  <li><strong>What does "buy at market" mean precisely?</strong> Our in-app flow uses FAK (Fill-And-Kill) at the cross-the-spread price. Same for Telegram. But if the user says "sell at $0.20" we should honor that as a true limit — needs intent schema to express both modes.</li>
+  <li><strong>How do we surface fills back into Telegram?</strong> Push the order ID + Polygonscan link as a Telegram message? Or also reflect in the web app's RecentTradesBubble (we already do this via the existing notify endpoint)? Probably both.</li>
+  <li><strong>Multi-wallet per Telegram user.</strong> Power users may want to use different wallets for different trades. v1: one EOA per Telegram user, set on <code>/connect</code>. Re-running <code>/connect</code> replaces it.</li>
+</ol>
+
+<h2>9. Security & trust considerations</h2>
+
+<ul>
+  <li><strong>The wallet popup is the actual source of truth.</strong> No matter what the bot tells the user, the typed-data shown in MetaMask Mobile (MakerAmount, TakerAmount, Side, TokenId) is what the user actually signs. As long as the user reads the popup, the bot cannot steal funds.</li>
+  <li><strong>Bot-side validation.</strong> Before sending a typed-data sign request via WC, the bot must verify: the recommendation/market exists, the size is within the user's stated intent, the price is within a sane bound of the current order book. Avoids the bot accidentally requesting a 10x-larger trade than the user said.</li>
+  <li><strong>Session hijack mitigation.</strong> WC sessions are bound to the pairing keys derived during the initial handshake. Anyone with the session topic alone cannot send signature requests. Still, session storage on the bot's DB is sensitive — treat it like an auth token. Encrypt at rest if Supabase doesn't already.</li>
+  <li><strong>Rate limiting.</strong> Reuse the existing <code>src/lib/trades/rate-limit.ts</code> with a <code>'tg-trade'</code> scope to cap trades per Telegram user per minute.</li>
+  <li><strong>Spoofed Telegram messages.</strong> Grammy verifies updates against the bot token, so we can trust the <code>from.id</code> field. The bot's session lookup keys on that ID.</li>
+</ul>
+
+<h2>10. Demo script (target for the live walkthrough)</h2>
+
+<blockquote>
+<p><strong>You:</strong> /connect</p>
+<p><strong>zer0:</strong> <em>[QR code + tap-to-open MetaMask link]</em></p>
+<p><em>[User taps; MetaMask Mobile opens; user approves; bot confirms in chat]</em></p>
+<p><strong>zer0:</strong> ✓ connected wallet 0xf6a7…9caa on Polygon. ask me about any Polymarket market.</p>
+<p><strong>You:</strong> what do you think about the US-Iran peace deal market?</p>
+<p><strong>zer0:</strong> US x Iran permanent peace deal by June 30, 2026? — YES trading at $0.42, NO at $0.58. <em>[analysis paragraph]</em>. fair value somewhere around $0.25-30. YES looks 12pp overpriced — SELL signal, conviction 0.72.</p>
+<p><strong>You:</strong> sell me $5 of YES</p>
+<p><strong>zer0:</strong> OK — selling ~$5 of YES at the current best bid of $0.41. approving in your wallet now…</p>
+<p><em>[MetaMask Mobile popup; user signs]</em></p>
+<p><strong>zer0:</strong> ✓ filled. order 0x… · tx <a>polygonscan.com/tx/0x…</a></p>
+</blockquote>
+
+<h2>11. Why not just use Polymarket's own UI?</h2>
+
+<p>Polymarket has a web UI and Telegram trading via PolyTrader and similar third-party bots. We're not competing with the trading <em>execution</em> — we're offering <strong>analysis + execution in one conversational surface</strong>. zer0 has its own opinion. The trade is the consequence of the conversation, not the start of it.</p>
+
+<p>The differentiator is in the analyze step (Tetlock-style superforecasting) and the autonomous brain-tick that surfaces opportunities. The Telegram surface is just the most natural place to consume that.</p>
+
+<h2>12. References</h2>
+
+<ul>
+  <li><a href="https://docs.walletconnect.com/api/sign/dapp-usage" target="_blank">WalletConnect Sign API (dApp usage)</a></li>
+  <li><a href="https://docs.polymarket.com/developers/CLOB/overview" target="_blank">Polymarket CLOB API overview</a></li>
+  <li><a href="https://docs.polymarket.com/developers/CLOB/geoblock" target="_blank">Polymarket geoblock list</a></li>
+  <li><a href="https://grammy.dev/" target="_blank">Grammy (Telegram bot framework)</a></li>
+  <li>In-repo: <code>src/lib/polymarket/clob-browser.ts</code> — the just-shipped client-side ClobClient pattern; mirror its structure for the bot's submit path.</li>
+  <li>In-repo: <code>src/app/api/trade/prepare/route.ts</code> — the typed-data builder we'll reuse server-side from the bot.</li>
+  <li>In-repo: <code>src/app/api/trade/notify/route.ts</code> — the outcome-recording endpoint we'll also call from the bot once the order resolves.</li>
+</ul>
+
+<hr />
+
+<p class="meta">This document is intentionally exhaustive — read sections 1-3 for the executive summary, 5 and 7 for the implementation map, and 8 for the open questions to settle before writing any code.</p>
+
+</body>
+</html>
