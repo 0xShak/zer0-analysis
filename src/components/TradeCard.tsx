@@ -45,10 +45,46 @@ export function TradeCard({
       setError('no injected wallet');
       return;
     }
-    setStatus('preparing');
     setError(null);
     setClobOrderId(null);
     try {
+      // Polymarket is on Polygon (chainId 137 / 0x89). The EIP-712 domain we
+      // ask the wallet to sign also encodes 137 — if the wallet is on a
+      // different chain MetaMask rejects the sign request with -32603.
+      const POLYGON_HEX = '0x89';
+      const currentChain = ((await ethereum.request({
+        method: 'eth_chainId',
+      })) as string).toLowerCase();
+      if (currentChain !== POLYGON_HEX) {
+        setStatus('signing');
+        try {
+          await ethereum.request({
+            method: 'wallet_switchEthereumChain',
+            params: [{ chainId: POLYGON_HEX }],
+          });
+        } catch (switchErr) {
+          const code = (switchErr as { code?: number })?.code;
+          // 4902 = chain not added yet. Prompt the user to add Polygon.
+          if (code === 4902) {
+            await ethereum.request({
+              method: 'wallet_addEthereumChain',
+              params: [
+                {
+                  chainId: POLYGON_HEX,
+                  chainName: 'Polygon',
+                  nativeCurrency: { name: 'POL', symbol: 'POL', decimals: 18 },
+                  rpcUrls: ['https://polygon-rpc.com'],
+                  blockExplorerUrls: ['https://polygonscan.com'],
+                },
+              ],
+            });
+          } else {
+            throw switchErr;
+          }
+        }
+      }
+
+      setStatus('preparing');
       const prep = await fetch('/api/trade/prepare', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -104,14 +140,26 @@ export function TradeCard({
       setStatus('done');
     } catch (e) {
       setStatus('error');
-      // EIP-1193 user-rejection code is 4001; surface a friendlier message.
-      const msg = e instanceof Error ? e.message : String(e);
-      const isUserReject =
-        typeof e === 'object' &&
-        e !== null &&
-        'code' in e &&
-        (e as { code: unknown }).code === 4001;
-      setError(isUserReject ? 'signature rejected' : msg);
+      // EIP-1193 errors from injected wallets are plain `{ code, message }`
+      // objects, not Error instances. `String({…})` yields "[object Object]",
+      // so we extract `.message` manually before falling back.
+      let code: number | undefined;
+      let msg: string;
+      if (typeof e === 'object' && e !== null) {
+        const obj = e as Record<string, unknown>;
+        if (typeof obj.code === 'number') code = obj.code;
+        msg =
+          typeof obj.message === 'string'
+            ? obj.message
+            : e instanceof Error
+              ? e.message
+              : JSON.stringify(e);
+      } else {
+        msg = String(e);
+      }
+      if (code === 4001) setError('signature rejected');
+      else if (code === 4100) setError('wallet not authorized for this account');
+      else setError(msg);
     }
   }
 
