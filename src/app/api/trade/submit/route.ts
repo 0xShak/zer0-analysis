@@ -13,6 +13,12 @@ import type { SignedOrder } from '@polymarket/clob-client';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+// Polymarket geoblocks 33 countries on POST /order including the US (where
+// Vercel's default iad1 region runs). Dublin is in the EU (Ireland not on
+// the block list) and close enough to both US and EU users for the demo.
+// Without this pin, every trade returns "Trading restricted in your region"
+// from Polymarket — see https://docs.polymarket.com/developers/CLOB/geoblock.
+export const preferredRegion = 'dub1';
 
 export async function POST(req: NextRequest) {
   const json = await req.json().catch(() => null);

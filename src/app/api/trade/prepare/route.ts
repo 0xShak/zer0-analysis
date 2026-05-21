@@ -1,7 +1,3 @@
-// TODO(v1.1): For signature_type=0 (EOA) users on first trade, frontend must
-// check USDC.e + CTF allowances and prompt approval txs BEFORE calling
-// /api/trade/submit. We surface no warning from the backend.
-
 import type { NextRequest } from 'next/server';
 import { utils as ethersUtils } from 'ethers';
 import { createAdminClient } from '@/lib/supabase/admin';
@@ -17,6 +13,12 @@ import {
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+// Match submit/route.ts. Prepare itself only reads from Polymarket (which
+// is not geoblocked), but both routes share the ClobClient module-level
+// cache via clob.ts — pinning to the same region keeps the relay API-key
+// handshake (createOrDeriveApiKey, which IS a POST) consistently on the
+// allowed side too.
+export const preferredRegion = 'dub1';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
