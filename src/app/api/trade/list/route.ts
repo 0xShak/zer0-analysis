@@ -35,12 +35,16 @@ export async function GET(req: NextRequest) {
   }
 
   const supabase = createAdminClient();
+  // Exclude 'pending' and 'prepared' — those are pre-submit internal states
+  // that accumulate every time a user clicks execute and then cancels the
+  // signature. They have no value in a user-facing activity feed.
   const { data, error } = await supabase
     .from('trades')
     .select(
       'id, market_condition_id, side, price, size_usd, status, clob_order_id, failure_reason, submitted_at, created_at, recommendation_id',
     )
     .ilike('user_address', address)
+    .not('status', 'in', '(pending,prepared)')
     .order('created_at', { ascending: false })
     .limit(20);
 

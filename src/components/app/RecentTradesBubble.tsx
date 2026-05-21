@@ -165,12 +165,15 @@ export function RecentTradesBubble({ userAddress }: { userAddress?: string }) {
               <h3 className="text-xs font-medium uppercase tracking-[0.18em] text-zinc-400">
                 your trades
               </h3>
-              <span
-                className="font-mono text-[10px] text-zinc-500"
-                title={userAddress}
+              <a
+                href={`https://polymarket.com/profile/${userAddress}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-mono text-[10px] text-zinc-500 underline-offset-2 transition hover:text-zinc-300 hover:underline"
+                title="open Polymarket profile in a new tab"
               >
-                {userAddress.slice(0, 6)}…{userAddress.slice(-4)}
-              </span>
+                {userAddress.slice(0, 6)}…{userAddress.slice(-4)} ↗
+              </a>
             </div>
             <ul className="max-h-[28rem] divide-y divide-white/[0.04] overflow-y-auto bg-zinc-950">
               {trades.length === 0 ? (

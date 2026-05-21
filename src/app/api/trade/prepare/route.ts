@@ -9,7 +9,11 @@ import type { Json } from '@/lib/database.types';
 import { clientIpFromHeaders } from '@/lib/chat/fingerprint';
 import { rateLimit, rateLimitKey } from '@/lib/trades/rate-limit';
 import { PrepareBody } from '@/lib/trades/validators';
-import { buildTypedData, getMarketMeta } from '@/lib/polymarket/clob';
+import {
+  buildTypedData,
+  getBestExecutionPrice,
+  getMarketMeta,
+} from '@/lib/polymarket/clob';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -118,15 +122,34 @@ export async function POST(req: NextRequest) {
   }
 
   const sizeUsd = sizeOverrideUsd ?? Number(rec.size);
-  const price = Number(rec.price);
-  // Polymarket SDK's `size` is SHARES, not USD. shares = USD / price so that
-  // a SELL order's takerAmount (USDC received) actually equals sizeUsd, and a
-  // BUY order's makerAmount (USDC spent) actually equals sizeUsd. Without
-  // this conversion the order is silently sized in contracts, which on a
-  // $0.25 market means 4× less notional than the user thinks.
-  if (!Number.isFinite(price) || price <= 0) {
+  const recPrice = Number(rec.price);
+  if (!Number.isFinite(recPrice) || recPrice <= 0) {
     return Response.json({ error: 'invalid_recommendation_price' }, { status: 500 });
   }
+
+  // We submit as FAK (fill-and-kill) so trades either settle on-chain
+  // immediately or fail with a real reason — no resting limbo. For that
+  // semantic to actually result in a fill, we have to price at (or beyond)
+  // the opposite side of the order book. BUY → best ask, SELL → best bid.
+  // We fall back to the recommendation price if the book lookup fails;
+  // that order will likely no-fill but at least won't crash prepare.
+  let price = recPrice;
+  let bookPrice: number | null = null;
+  try {
+    bookPrice = await getBestExecutionPrice(rec.token_id, rec.side);
+    if (bookPrice !== null) price = bookPrice;
+  } catch (err) {
+    console.warn('[trade/prepare] order-book lookup failed', {
+      tokenId: rec.token_id,
+      side: rec.side,
+      message: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  // Polymarket SDK's `size` is SHARES, not USD. shares = USD / price so the
+  // user's stated USD notional becomes the order's USDC leg. Uses the
+  // execution price (not the recommendation price) so shares-vs-USDC stay
+  // consistent with what will actually be quoted on-chain.
   const sizeShares = sizeUsd / price;
 
   // ---- build typed data ----
@@ -182,6 +205,14 @@ export async function POST(req: NextRequest) {
     market: {
       question,
       condition_id: rec.market_condition_id,
+    },
+    // Execution metadata for the UI: tells the user the order will fill at
+    // the live book price, not the analyst's signal price.
+    execution: {
+      executionPrice: price,
+      recommendationPrice: recPrice,
+      bookPrice,
+      orderType: 'FAK',
     },
   });
 }

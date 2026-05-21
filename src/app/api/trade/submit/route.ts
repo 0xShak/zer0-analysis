@@ -121,7 +121,14 @@ export async function POST(req: NextRequest) {
 
   let clobResult: unknown;
   try {
-    clobResult = await postSignedOrder(sdkOrder, OrderType.GTC);
+    // FAK (Fill-And-Kill / immediate-or-cancel): match whatever's possible
+    // against the current book at this price-or-better, then cancel the
+    // unfilled remainder. Combined with the cross-the-spread pricing the
+    // prepare route now sets, this makes every submitted order either
+    // settle on-chain immediately or fail with a real error — no resting
+    // limit-order limbo, which means every successful submit produces a
+    // visible Polygonscan tx on the CTF Exchange contract.
+    clobResult = await postSignedOrder(sdkOrder, OrderType.FAK);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error('[trade/submit] CLOB error', { tradeId, message });
@@ -189,14 +196,29 @@ export async function POST(req: NextRequest) {
     });
   }
 
+  // If Polymarket matched the order on submit, the response carries
+  // status='matched' and/or a non-empty transactionsHashes array. Surface
+  // that as 'filled' so the user can see the trade actually settled. A
+  // resting limit order returns status='live' (or omits status) — we keep
+  // those as 'submitted'.
+  const clobStatus =
+    typeof resultObj.status === 'string' ? resultObj.status : '';
+  const txHashes = Array.isArray(resultObj.transactionsHashes)
+    ? (resultObj.transactionsHashes as unknown[]).filter(
+        (h): h is string => typeof h === 'string',
+      )
+    : [];
+  const matched = clobStatus === 'matched' || txHashes.length > 0;
   const now = new Date().toISOString();
+
   const { error: updateErr } = await supabase
     .from('trades')
     .update({
-      status: 'submitted',
+      status: matched ? 'filled' : 'submitted',
       clob_order_id: clobOrderId,
       signed_order: sdkOrder as unknown as Json,
       submitted_at: now,
+      filled_at: matched ? now : null,
     })
     .eq('id', tradeId);
   if (updateErr) {
@@ -212,7 +234,8 @@ export async function POST(req: NextRequest) {
   return Response.json({
     tradeId,
     clobOrderId,
-    status: 'submitted',
+    status: matched ? 'filled' : 'submitted',
     submittedAt: now,
+    txHashes,
   });
 }

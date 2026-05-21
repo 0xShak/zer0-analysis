@@ -192,6 +192,32 @@ export async function postSignedOrder(
   return client.postOrder(signedOrder, orderType);
 }
 
+/**
+ * Fetch the price that crosses the spread on `tokenId` for the given side:
+ *   - BUY  → best (lowest)  ask
+ *   - SELL → best (highest) bid
+ *
+ * Used to convert a model-suggested limit price into one that will fill
+ * immediately when submitted as FAK. Returns null if the book is empty
+ * or unreachable — caller should fall back to the recommendation price.
+ */
+export async function getBestExecutionPrice(
+  tokenId: string,
+  side: 'BUY' | 'SELL',
+): Promise<number | null> {
+  const client = await getClobClient();
+  const book = await client.getOrderBook(tokenId);
+  const levels = side === 'BUY' ? book?.asks : book?.bids;
+  if (!Array.isArray(levels) || levels.length === 0) return null;
+  let best = side === 'BUY' ? Infinity : -Infinity;
+  for (const lvl of levels) {
+    const p = parseFloat(lvl?.price ?? '');
+    if (!Number.isFinite(p)) continue;
+    if (side === 'BUY' ? p < best : p > best) best = p;
+  }
+  return Number.isFinite(best) ? best : null;
+}
+
 export { OrderType };
 
 // ---- Back-compat exports kept for old callers (existing route stubs) ----
