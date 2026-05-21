@@ -26,6 +26,7 @@ import {
   type SignedOrder,
 } from '@polymarket/clob-client-v2';
 import { providers } from 'ethers';
+import { getBuilderConfig } from './builder-config';
 
 const HOST = 'https://clob.polymarket.com';
 const CHAIN_ID = 137;
@@ -101,6 +102,11 @@ export async function getOrCreatePolymarketClient(
     },
   );
   const signer = provider.getSigner(address);
+  // Builder config goes on every ClobClient — both `createOrDeriveApiKey`
+  // and `postOrder` route through SDK helpers that may need builder headers
+  // (and clob-client-v2 reads `builderConfig.builderCode` to attach the
+  // V2 order's `builder` field for attribution).
+  const builderConfig = await getBuilderConfig();
 
   let creds = loadCachedCreds(address);
   if (!creds) {
@@ -111,6 +117,8 @@ export async function getOrCreatePolymarketClient(
       signer: signer as any,
       signatureType: SignatureTypeV2.POLY_1271,
       funderAddress: depositWalletAddress,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      builderConfig: builderConfig as any,
     });
     creds = await bootstrap.createOrDeriveApiKey();
     saveCachedCreds(address, creds);
@@ -124,6 +132,8 @@ export async function getOrCreatePolymarketClient(
     creds,
     signatureType: SignatureTypeV2.POLY_1271,
     funderAddress: depositWalletAddress,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    builderConfig: builderConfig as any,
   });
 }
 

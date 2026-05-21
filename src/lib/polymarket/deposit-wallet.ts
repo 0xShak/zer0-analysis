@@ -35,6 +35,7 @@ import {
   POLYMARKET_RELAYER_URL,
   PUSD_ADDRESS,
 } from './contracts';
+import { getBuilderConfig } from './builder-config';
 import { env } from '../env';
 
 const MAX_UINT256 =
@@ -145,17 +146,34 @@ function getBrowserSigner(ethereum: EthereumProvider, address: string) {
 }
 
 /**
- * RelayClient bound to the connected EOA. Polymarket's relayer accepts
- * unsigned WALLET_CREATE requests (gas sponsored); WALLET-EXECUTE requests
- * require an EIP-712 signature from the EOA — the SDK builds it.
+ * RelayClient bound to the connected EOA and authenticated as zer0's builder.
+ *
+ * Polymarket's relayer rejects unauthenticated `/submit` calls with 401, so
+ * we have to attach builder headers on every request — including
+ * `WALLET_CREATE` (deploy) and `WALLET` (executeBatch). The SDK calls
+ * `builderConfig.generateBuilderHeaders(method, path, body)` for us; our
+ * shim (`RelayerApiKeyBuilderConfig`) returns the simpler
+ * `RELAYER_API_KEY`/`RELAYER_API_KEY_ADDRESS` pair instead of the older
+ * HMAC trio.
+ *
+ * EIP-712 signing for the per-user batch payload still happens in the
+ * browser via the user's wallet — builder auth and user signature are
+ * independent.
  */
-export function getBrowserRelayClient(
+export async function getBrowserRelayClient(
   ethereum: EthereumProvider,
   address: string,
-): RelayClient {
+): Promise<RelayClient> {
   const signer = getBrowserSigner(ethereum, address);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return new RelayClient(POLYMARKET_RELAYER_URL, POLYGON_CHAIN_ID, signer as any);
+  const builderConfig = await getBuilderConfig();
+  return new RelayClient(
+    POLYMARKET_RELAYER_URL,
+    POLYGON_CHAIN_ID,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    signer as any,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    builderConfig as any,
+  );
 }
 
 /**
@@ -168,7 +186,7 @@ export async function deployDepositWalletFromBrowser(
   ethereum: EthereumProvider,
   address: string,
 ): Promise<void> {
-  const relayer = getBrowserRelayClient(ethereum, address);
+  const relayer = await getBrowserRelayClient(ethereum, address);
   const response = await relayer.deployDepositWallet();
   await response.wait();
 }
@@ -187,7 +205,7 @@ export async function executeDepositWalletBatchFromBrowser(
   calls: DepositWalletCall[],
   deadlineSeconds = 600,
 ): Promise<void> {
-  const relayer = getBrowserRelayClient(ethereum, ownerAddress);
+  const relayer = await getBrowserRelayClient(ethereum, ownerAddress);
   const deadline = Math.floor(Date.now() / 1000 + deadlineSeconds).toString();
   const response = await relayer.executeDepositWalletBatch(
     calls,
