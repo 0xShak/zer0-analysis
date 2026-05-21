@@ -18,6 +18,12 @@ export const env = {
   NEXT_PUBLIC_SUPABASE_ANON_KEY: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? '',
   NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000',
 
+  // Polygon JSON-RPC endpoint for server-side reads (allowance preflight,
+  // balance lookups). Default to Polygon's official public RPC; override
+  // with a private RPC (Alchemy/Infura/QuickNode) if rate-limits bite.
+  POLYGON_RPC_URL:
+    process.env.POLYGON_RPC_URL ?? 'https://polygon-rpc.com',
+
   // Server-only — readers should call these via getters below to surface
   // a useful error when the var is unset during a request.
   get SUPABASE_SERVICE_KEY() { return need('SUPABASE_SERVICE_KEY'); },

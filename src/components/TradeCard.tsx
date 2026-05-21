@@ -1,6 +1,11 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import {
+  sendApproveUsdc,
+  sendSetApprovalForAllCtf,
+  waitForReceipt,
+} from '@/lib/web3/approve';
 
 type EthereumProvider = {
   request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
@@ -22,6 +27,19 @@ export type TradeRecommendation = {
   rationale: string;
 };
 
+type ApprovalState = {
+  usdcOk: boolean;
+  ctfOk: boolean;
+  spender: string;
+  negRisk: boolean;
+};
+
+// Treat any non-zero USDC allowance as "approved" — the in-app flow only
+// ever sets MAX_UINT256, so any positive value means we (or Polymarket's
+// UI in the past) granted access. A single full-token threshold gives some
+// slack against rounding without being so high it ignores partial revokes.
+const USDC_OK_THRESHOLD = BigInt(1000000); // 1 USDC.e (6 decimals) in micro-units
+
 export function TradeCard({
   rec,
   userAddress,
@@ -30,10 +48,19 @@ export function TradeCard({
   userAddress?: string;
 }) {
   const [status, setStatus] = useState<
-    'idle' | 'preparing' | 'signing' | 'submitting' | 'done' | 'error'
+    | 'idle'
+    | 'checking-allowance'
+    | 'approving-usdc'
+    | 'approving-ctf'
+    | 'preparing'
+    | 'signing'
+    | 'submitting'
+    | 'done'
+    | 'error'
   >('idle');
   const [error, setError] = useState<string | null>(null);
   const [clobOrderId, setClobOrderId] = useState<string | null>(null);
+  const [approval, setApproval] = useState<ApprovalState | null>(null);
   // Size is in USD (server caps at $1-$100 via PrepareBody). The wallet
   // popup will show this converted to share-denominated maker/taker amounts.
   const [sizeUsdInput, setSizeUsdInput] = useState<string>(
@@ -46,7 +73,61 @@ export function TradeCard({
   const sharesEstimate =
     sizeValid && rec.price > 0 ? sizeUsd / Number(rec.price) : null;
   const inFlight =
-    status === 'preparing' || status === 'signing' || status === 'submitting';
+    status === 'checking-allowance' ||
+    status === 'approving-usdc' ||
+    status === 'approving-ctf' ||
+    status === 'preparing' ||
+    status === 'signing' ||
+    status === 'submitting';
+  const needsUsdcApproval = !!approval && !approval.usdcOk;
+  const needsCtfApproval =
+    !!approval && rec.side === 'SELL' && !approval.ctfOk;
+  const setupRequired = needsUsdcApproval || needsCtfApproval;
+
+  // Allowance preflight — fires when wallet connects or the recommendation
+  // changes. The server reads USDC.e.allowance + CTF.isApprovedForAll from
+  // a public Polygon RPC; no signing is required. If anything is missing,
+  // we surface a small "first-time setup" notice; clicking execute will
+  // run the approve tx(s) inline before signing the order.
+  useEffect(() => {
+    if (!userAddress) return;
+    let cancelled = false;
+    async function loadAllowance() {
+      try {
+        const res = await fetch(
+          `/api/trade/allowance?address=${encodeURIComponent(userAddress!)}&recommendationId=${rec.id}`,
+          { cache: 'no-store' },
+        );
+        if (cancelled) return;
+        if (!res.ok) return;
+        const body = (await res.json()) as {
+          usdc: { allowance: string; spender: string };
+          ctf: { approved: boolean; spender: string };
+          exchange: { negRisk: boolean };
+        };
+        if (cancelled) return;
+        let allowanceBig: bigint;
+        try {
+          allowanceBig = BigInt(body.usdc.allowance);
+        } catch {
+          allowanceBig = BigInt(0);
+        }
+        setApproval({
+          usdcOk: allowanceBig >= USDC_OK_THRESHOLD,
+          ctfOk: !!body.ctf.approved,
+          spender: body.usdc.spender,
+          negRisk: body.exchange.negRisk,
+        });
+      } catch {
+        // Allowance is best-effort. If preflight fails the user can still
+        // try execute; submit will surface the real CLOB rejection.
+      }
+    }
+    void loadAllowance();
+    return () => {
+      cancelled = true;
+    };
+  }, [userAddress, rec.id]);
 
   async function execute() {
     if (!userAddress) {
@@ -99,6 +180,44 @@ export function TradeCard({
             throw switchErr;
           }
         }
+      }
+
+      // First-time setup: approve USDC.e (always for any side) and CTF
+      // setApprovalForAll (SELL only). Each is one on-chain tx the user
+      // signs in their wallet. We wait for receipts so a subsequent
+      // signTypedData / postOrder doesn't race ahead of the approval.
+      if (approval && (needsUsdcApproval || needsCtfApproval)) {
+        if (needsUsdcApproval) {
+          setStatus('approving-usdc');
+          const txHash = await sendApproveUsdc(
+            ethereum,
+            userAddress,
+            approval.spender,
+          );
+          const receipt = await waitForReceipt(ethereum, txHash);
+          if (receipt.status !== 'success') {
+            throw new Error('USDC approve tx reverted');
+          }
+        }
+        if (needsCtfApproval) {
+          setStatus('approving-ctf');
+          const txHash = await sendSetApprovalForAllCtf(
+            ethereum,
+            userAddress,
+            approval.spender,
+          );
+          const receipt = await waitForReceipt(ethereum, txHash);
+          if (receipt.status !== 'success') {
+            throw new Error('CTF approve tx reverted');
+          }
+        }
+        // Locally mark approvals as done so any retry within this session
+        // skips the on-chain dance. A page reload will re-check.
+        setApproval({
+          ...approval,
+          usdcOk: true,
+          ctfOk: rec.side === 'SELL' ? true : approval.ctfOk,
+        });
       }
 
       setStatus('preparing');
@@ -238,12 +357,30 @@ export function TradeCard({
         </span>
       </div>
 
+      {setupRequired && status === 'idle' ? (
+        <p className="mb-2 rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1.5 text-[10px] leading-snug text-amber-200">
+          first-time setup: clicking execute will prompt{' '}
+          {needsUsdcApproval && needsCtfApproval
+            ? 'USDC.e and share approvals'
+            : needsUsdcApproval
+              ? 'a one-time USDC.e approval'
+              : 'a one-time share-token approval'}{' '}
+          before signing the order.
+        </p>
+      ) : null}
+
       <button
         onClick={() => void execute()}
         disabled={inFlight || status === 'done' || !sizeValid}
         className="w-full rounded-lg bg-zinc-50 px-3 py-1.5 text-xs font-medium text-black transition hover:bg-white disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-500"
       >
-        {status === 'idle' ? 'execute' : status === 'error' ? 'retry' : status}
+        {status === 'idle'
+          ? setupRequired
+            ? 'approve & execute'
+            : 'execute'
+          : status === 'error'
+            ? 'retry'
+            : status}
       </button>
       {status === 'done' && clobOrderId ? (
         <p className="mt-2 truncate font-mono text-[10px] text-emerald-300/80">
