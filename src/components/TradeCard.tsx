@@ -2,6 +2,16 @@
 
 import { useState } from 'react';
 
+type EthereumProvider = {
+  request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
+};
+
+declare global {
+  interface Window {
+    ethereum?: EthereumProvider;
+  }
+}
+
 export type TradeRecommendation = {
   id: string;
   market_question: string | null;
@@ -20,17 +30,24 @@ export function TradeCard({
   userAddress?: string;
 }) {
   const [status, setStatus] = useState<
-    'idle' | 'preparing' | 'submitting' | 'done' | 'error'
+    'idle' | 'preparing' | 'signing' | 'submitting' | 'done' | 'error'
   >('idle');
   const [error, setError] = useState<string | null>(null);
+  const [clobOrderId, setClobOrderId] = useState<string | null>(null);
 
   async function execute() {
     if (!userAddress) {
       setError('connect a wallet first');
       return;
     }
+    const ethereum = typeof window !== 'undefined' ? window.ethereum : undefined;
+    if (!ethereum) {
+      setError('no injected wallet');
+      return;
+    }
     setStatus('preparing');
     setError(null);
+    setClobOrderId(null);
     try {
       const prep = await fetch('/api/trade/prepare', {
         method: 'POST',
@@ -41,11 +58,60 @@ export function TradeCard({
           signatureType: 0,
         }),
       });
-      if (!prep.ok) throw new Error(`prepare ${prep.status}`);
-      throw new Error('wallet signing wired up on day 5');
+      const prepBody = (await prep.json().catch(() => null)) as
+        | { tradeId: string; typedData: { message: Record<string, unknown> } }
+        | { error: string }
+        | null;
+      if (!prep.ok || !prepBody || 'error' in prepBody) {
+        const reason =
+          prepBody && 'error' in prepBody ? prepBody.error : `status ${prep.status}`;
+        throw new Error(`prepare failed: ${reason}`);
+      }
+      const { tradeId, typedData } = prepBody;
+
+      setStatus('signing');
+      // EIP-712 typed-data sign. MetaMask wants the payload JSON-stringified
+      // as the second param; signature comes back as a 0x-prefixed hex string.
+      const signature = (await ethereum.request({
+        method: 'eth_signTypedData_v4',
+        params: [userAddress, JSON.stringify(typedData)],
+      })) as string;
+
+      // typedData.message already contains every Order field the submit
+      // route validates (salt, maker, signer, taker, tokenId, makerAmount,
+      // takerAmount, expiration, nonce, feeRateBps, side, signatureType).
+      // We just append the signature.
+      const signedOrder = { ...typedData.message, signature };
+
+      setStatus('submitting');
+      const submit = await fetch('/api/trade/submit', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ tradeId, signedOrder }),
+      });
+      const submitBody = (await submit.json().catch(() => null)) as
+        | { tradeId: string; clobOrderId: string | null; status: string }
+        | { error: string; reason?: string }
+        | null;
+      if (!submit.ok || !submitBody || 'error' in submitBody) {
+        const reason =
+          submitBody && 'error' in submitBody
+            ? `${submitBody.error}${submitBody.reason ? `: ${submitBody.reason}` : ''}`
+            : `status ${submit.status}`;
+        throw new Error(`submit failed: ${reason}`);
+      }
+      setClobOrderId(submitBody.clobOrderId);
+      setStatus('done');
     } catch (e) {
       setStatus('error');
-      setError(e instanceof Error ? e.message : String(e));
+      // EIP-1193 user-rejection code is 4001; surface a friendlier message.
+      const msg = e instanceof Error ? e.message : String(e);
+      const isUserReject =
+        typeof e === 'object' &&
+        e !== null &&
+        'code' in e &&
+        (e as { code: unknown }).code === 4001;
+      setError(isUserReject ? 'signature rejected' : msg);
     }
   }
 
@@ -82,11 +148,21 @@ export function TradeCard({
 
       <button
         onClick={() => void execute()}
-        disabled={status === 'preparing' || status === 'submitting'}
+        disabled={
+          status === 'preparing' ||
+          status === 'signing' ||
+          status === 'submitting' ||
+          status === 'done'
+        }
         className="w-full rounded-lg bg-zinc-50 px-3 py-1.5 text-xs font-medium text-black transition hover:bg-white disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-500"
       >
-        {status === 'idle' ? 'execute' : status}
+        {status === 'idle' ? 'execute' : status === 'error' ? 'retry' : status}
       </button>
+      {status === 'done' && clobOrderId ? (
+        <p className="mt-2 truncate font-mono text-[10px] text-emerald-300/80">
+          order {clobOrderId}
+        </p>
+      ) : null}
       {error ? (
         <p className="mt-2 text-[10px] text-rose-400">{error}</p>
       ) : null}
