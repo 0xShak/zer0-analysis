@@ -26,7 +26,7 @@ import {
   type SignedOrder,
 } from '@polymarket/clob-client-v2';
 import { providers } from 'ethers';
-import { getBuilderConfig } from './builder-config';
+import { getClobBuilderConfig } from './builder-config';
 
 const HOST = 'https://clob.polymarket.com';
 const CHAIN_ID = 137;
@@ -102,11 +102,12 @@ export async function getOrCreatePolymarketClient(
     },
   );
   const signer = provider.getSigner(address);
-  // Builder config goes on every ClobClient — both `createOrDeriveApiKey`
-  // and `postOrder` route through SDK helpers that may need builder headers
-  // (and clob-client-v2 reads `builderConfig.builderCode` to attach the
-  // V2 order's `builder` field for attribution).
-  const builderConfig = await getBuilderConfig();
+  // ClobClient's `builderConfig` is just `{ builderCode }` — the SDK reads
+  // it when stamping the V2 order's `builder` field. CLOB write
+  // authentication uses the per-user HMAC creds derived from
+  // `createOrDeriveApiKey`, not the builder-program HMAC trio, so we don't
+  // wire the signing config here (the relayer client does that).
+  const builderConfig = getClobBuilderConfig();
 
   let creds = loadCachedCreds(address);
   if (!creds) {
@@ -117,8 +118,7 @@ export async function getOrCreatePolymarketClient(
       signer: signer as any,
       signatureType: SignatureTypeV2.POLY_1271,
       funderAddress: depositWalletAddress,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      builderConfig: builderConfig as any,
+      builderConfig,
     });
     creds = await bootstrap.createOrDeriveApiKey();
     saveCachedCreds(address, creds);
@@ -132,8 +132,7 @@ export async function getOrCreatePolymarketClient(
     creds,
     signatureType: SignatureTypeV2.POLY_1271,
     funderAddress: depositWalletAddress,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    builderConfig: builderConfig as any,
+    builderConfig,
   });
 }
 

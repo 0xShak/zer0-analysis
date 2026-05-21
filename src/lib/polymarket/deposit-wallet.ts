@@ -35,7 +35,7 @@ import {
   POLYMARKET_RELAYER_URL,
   PUSD_ADDRESS,
 } from './contracts';
-import { getBuilderConfig } from './builder-config';
+import { getRelayerBuilderConfig } from './builder-config';
 import { env } from '../env';
 
 const MAX_UINT256 =
@@ -165,14 +165,13 @@ export async function getBrowserRelayClient(
   address: string,
 ): Promise<RelayClient> {
   const signer = getBrowserSigner(ethereum, address);
-  const builderConfig = await getBuilderConfig();
+  const builderConfig = getRelayerBuilderConfig();
   return new RelayClient(
     POLYMARKET_RELAYER_URL,
     POLYGON_CHAIN_ID,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     signer as any,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    builderConfig as any,
+    builderConfig,
   );
 }
 

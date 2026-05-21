@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@polymarket/builder-relayer-client": "^0.0.9",
+    "@polymarket/builder-signing-sdk": "^0.0.8",
     "@polymarket/clob-client-v2": "^1.0.6",
     "@supabase/ssr": "^0.10.3",
     "@supabase/supabase-js": "^2.106.0",

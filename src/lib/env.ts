@@ -47,17 +47,22 @@ export const env = {
   POLYMARKET_RELAY_SECRET: process.env.POLYMARKET_RELAY_SECRET ?? '',
 
   // ---- Polymarket builder identity (V2 relayer + order attribution) ----
-  // Obtained at https://polymarket.com/settings?tab=builder. Server-only —
-  // never expose to the browser. We surface them via the
-  // /api/polymarket/builder-headers route so the browser can pass them to
-  // the relayer SDK without bundling them into the client.
-  get POLYMARKET_BUILDER_CODE() { return need('POLYMARKET_BUILDER_CODE'); },
-  get POLYMARKET_RELAYER_API_KEY_ADDRESS() {
-    return need('POLYMARKET_RELAYER_API_KEY_ADDRESS');
+  // Obtained at https://polymarket.com/settings?tab=builder via "Create new" →
+  // "View API Details". The HMAC trio (api_key / secret / passphrase) is the
+  // long-lived credential set Polymarket uses to authenticate relayer + CLOB
+  // writes. The UI literally warns: "Never share your key or put it in client-
+  // side code." The browser only sees per-request HMAC signatures returned by
+  // our /api/polymarket/builder-sign route — the secret never leaves the
+  // server. Server-only — must NOT be prefixed `NEXT_PUBLIC_`.
+  get POLYMARKET_BUILDER_API_KEY() { return need('POLYMARKET_BUILDER_API_KEY'); },
+  get POLYMARKET_BUILDER_SECRET() { return need('POLYMARKET_BUILDER_SECRET'); },
+  get POLYMARKET_BUILDER_PASSPHRASE() {
+    return need('POLYMARKET_BUILDER_PASSPHRASE');
   },
-  // Opaque secret half of the relayer auth header pair. If polymarket.com's
-  // UI only surfaces the address (and no separate token), set this to the
-  // same address value as a first-attempt shortcut — the relayer will reject
-  // with 401 if a distinct secret is actually required.
-  get POLYMARKET_RELAYER_API_KEY() { return need('POLYMARKET_RELAYER_API_KEY'); },
+
+  // The builder attribution code (bytes32). Public — it's recorded in every
+  // V2 order's `builder` field anyway. Exposed to the browser so clob-client-v2
+  // can stamp orders without a round-trip.
+  NEXT_PUBLIC_POLYMARKET_BUILDER_CODE:
+    process.env.NEXT_PUBLIC_POLYMARKET_BUILDER_CODE ?? '',
 };

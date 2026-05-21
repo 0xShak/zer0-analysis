@@ -1,71 +1,51 @@
-// Minimal duck-typed BuilderConfig.
+// Polymarket builder authentication wiring.
 //
-// `@polymarket/builder-relayer-client` and `@polymarket/clob-client-v2` both
-// accept a `builderConfig` that they only interact with via:
-//   - `isValid()`                                     → boolean
-//   - `generateBuilderHeaders(method, path, body?)`   → headers | undefined
-//   - reading the `builderCode` field on the instance (clob-client-v2 only,
-//     for V2 order attribution)
+// Two different things called "BuilderConfig" exist in the Polymarket TS
+// stack — names collide but the shapes don't:
 //
-// `@polymarket/builder-signing-sdk` ships a full HMAC implementation, but we
-// don't have HMAC creds — polymarket.com's builder page issues a
-// `RELAYER_API_KEY` + `RELAYER_API_KEY_ADDRESS` pair instead. This file is
-// the shim that lets us pass the simpler header pair through the SDKs'
-// existing auth hook without installing the HMAC sdk.
+//   1. `@polymarket/builder-signing-sdk`'s `BuilderConfig` class. Has
+//      `isValid()` + `generateBuilderHeaders()`. The relayer SDK
+//      (`builder-relayer-client`) reads this to attach the four
+//      `POLY_BUILDER_*` HMAC headers to every `/submit` request.
+//
+//   2. `@polymarket/clob-client-v2`'s `BuilderConfig` interface — just
+//      `{ builderCode: string }`. The CLOB SDK reads `.builderCode` and
+//      stamps it onto the V2 order's `builder` field for attribution.
+//
+// We construct the first in REMOTE mode pointing at our /api/polymarket
+// /builder-sign route — the SDK POSTs `{ method, path, body, timestamp }`
+// per relayer request, we sign with the HMAC secret server-side, return
+// the four headers. The secret never leaves the server.
+//
+// The second is just the public bytes32 attribution code from a
+// NEXT_PUBLIC env var — no signing involved, attribution code is recorded
+// publicly on-chain anyway.
 
-export class RelayerApiKeyBuilderConfig {
-  constructor(
-    private readonly apiKey: string,
-    private readonly apiKeyAddress: string,
-    public readonly builderCode: string,
-  ) {}
+import { BuilderConfig } from '@polymarket/builder-signing-sdk';
+import { env } from '../env';
 
-  isValid(): boolean {
-    return Boolean(this.apiKey && this.apiKeyAddress);
+/**
+ * Browser-side `BuilderConfig` for the relayer SDK. Validates the URL
+ * (must start with http:// or https://) and POSTs each `(method, path,
+ * body)` to our server signer on demand.
+ */
+export function getRelayerBuilderConfig(): BuilderConfig {
+  if (typeof window === 'undefined') {
+    throw new Error('getRelayerBuilderConfig must be called in the browser');
   }
-
-  async generateBuilderHeaders(
-    _method?: string,
-    _path?: string,
-    _body?: string,
-  ): Promise<Record<string, string>> {
-    return {
-      RELAYER_API_KEY: this.apiKey,
-      RELAYER_API_KEY_ADDRESS: this.apiKeyAddress,
-    };
-  }
+  return new BuilderConfig({
+    remoteBuilderConfig: {
+      url: `${window.location.origin}/api/polymarket/builder-sign`,
+    },
+  });
 }
 
-export interface BuilderHeadersPayload {
-  RELAYER_API_KEY: string;
-  RELAYER_API_KEY_ADDRESS: string;
-  builderCode: string;
-}
-
-// Browser-side cache. The fetch is server-side via a same-origin GET; once
-// per page load is plenty (env values are static for the process lifetime).
-let cached: Promise<BuilderHeadersPayload> | null = null;
-
-export async function getBuilderHeaders(): Promise<BuilderHeadersPayload> {
-  if (cached) return cached;
-  cached = (async () => {
-    const res = await fetch('/api/polymarket/builder-headers', {
-      cache: 'no-store',
-    });
-    if (!res.ok) {
-      cached = null;
-      throw new Error(`builder-headers route returned ${res.status}`);
-    }
-    return (await res.json()) as BuilderHeadersPayload;
-  })();
-  return cached;
-}
-
-export async function getBuilderConfig(): Promise<RelayerApiKeyBuilderConfig> {
-  const h = await getBuilderHeaders();
-  return new RelayerApiKeyBuilderConfig(
-    h.RELAYER_API_KEY,
-    h.RELAYER_API_KEY_ADDRESS,
-    h.builderCode,
-  );
+/**
+ * Public attribution payload for `ClobClient`. The SDK reads `.builderCode`
+ * and writes it into each V2 order's `builder` field. Bytes32 hex.
+ */
+export function getClobBuilderConfig(): { builderCode: string } | undefined {
+  const code = env.NEXT_PUBLIC_POLYMARKET_BUILDER_CODE;
+  if (!code) return undefined;
+  return { builderCode: code };
 }
