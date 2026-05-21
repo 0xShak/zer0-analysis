@@ -154,11 +154,13 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  // Polymarket SDK's `size` is SHARES, not USD. shares = USD / price so the
-  // user's stated USD notional becomes the order's USDC leg. Uses the
-  // execution price (not the recommendation price) so shares-vs-USDC stay
-  // consistent with what will actually be quoted on-chain.
+  // Polymarket V2 market-order (FAK/FOK) rounding takes USD for BUY and
+  // SHARES for SELL — mirrors `UserMarketOrder.amount` in clob-client-v2.
+  // The min-order-size check below is always in shares; precompute both.
+  // Uses the live book price (not the recommendation price) so shares-vs-
+  // USDC stay consistent with what will actually be quoted on-chain.
   const sizeShares = sizeUsd / price;
+  const orderSize = rec.side === 'BUY' ? sizeUsd : sizeShares;
 
   // Guard against orders Polymarket will reject for being too small. Their
   // per-market min_order_size (returned from /book) is enforced server-
@@ -194,12 +196,16 @@ export async function POST(req: NextRequest) {
     prepared = await buildTypedData({
       tokenId: rec.token_id,
       price,
-      size: sizeShares,
+      size: orderSize,
       side: rec.side,
       maker,
       signatureType,
       tickSize,
       negRisk,
+      // Matches what `submitOrderFromBrowser` posts as. Routes amount
+      // rounding through the market-order helper so the matcher accepts
+      // the 2/4-decimal precision it expects.
+      orderType: 'FAK',
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

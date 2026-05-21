@@ -1,0 +1,555 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>zer0 · in-app trade execution — handoff v2</title>
+<style>
+  :root {
+    --bg: #0b0d10;
+    --fg: #e6e8eb;
+    --muted: #8a9099;
+    --accent: #5eead4;
+    --accent-dim: rgba(94, 234, 212, 0.18);
+    --warn: #fbbf24;
+    --warn-dim: rgba(251, 191, 36, 0.15);
+    --rose: #fb7185;
+    --rose-dim: rgba(251, 113, 133, 0.15);
+    --rule: rgba(255,255,255,0.08);
+    --card: rgba(255,255,255,0.02);
+    --code-bg: rgba(255,255,255,0.04);
+  }
+  html { background: var(--bg); }
+  body {
+    margin: 0;
+    padding: 48px 16px 96px;
+    font: 15px/1.65 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    color: var(--fg);
+    max-width: 920px;
+    margin-inline: auto;
+  }
+  h1, h2, h3, h4 { font-weight: 600; letter-spacing: -0.01em; }
+  h1 { font-size: 30px; margin: 0 0 6px; }
+  h2 { font-size: 21px; margin: 38px 0 12px; border-top: 1px solid var(--rule); padding-top: 28px; }
+  h3 { font-size: 17px; margin: 26px 0 10px; }
+  h4 { font-size: 13px; margin: 20px 0 6px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+  p { margin: 0 0 14px; color: var(--fg); }
+  a { color: var(--accent); }
+  code, pre {
+    font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    background: var(--code-bg);
+    border-radius: 4px;
+  }
+  code { padding: 1px 5px; }
+  pre {
+    padding: 12px 14px;
+    overflow-x: auto;
+    border: 1px solid var(--rule);
+    background: var(--code-bg);
+    border-radius: 8px;
+  }
+  ul, ol { padding-left: 22px; margin: 0 0 14px; }
+  li { margin: 6px 0; }
+  .meta { color: var(--muted); font-size: 13px; }
+  .tag {
+    display: inline-block;
+    font: 11px/1 ui-monospace, monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    padding: 4px 8px;
+    border-radius: 999px;
+    background: var(--accent-dim);
+    color: var(--accent);
+    margin-right: 6px;
+  }
+  .tag.warn { background: var(--warn-dim); color: var(--warn); }
+  .tag.rose { background: var(--rose-dim); color: var(--rose); }
+  .card {
+    border: 1px solid var(--rule);
+    background: var(--card);
+    padding: 16px 18px;
+    border-radius: 10px;
+    margin: 14px 0;
+  }
+  .card.warn { border-color: rgba(251,191,36,0.4); background: var(--warn-dim); }
+  .card.rose { border-color: rgba(251,113,133,0.4); background: var(--rose-dim); }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+    margin: 12px 0;
+  }
+  th, td {
+    border-bottom: 1px solid var(--rule);
+    padding: 8px 10px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { font-weight: 600; color: var(--muted); }
+  blockquote {
+    border-left: 2px solid var(--accent);
+    padding: 6px 14px;
+    margin: 14px 0;
+    color: var(--fg);
+    background: var(--code-bg);
+    border-radius: 0 6px 6px 0;
+  }
+  hr { border: none; border-top: 1px solid var(--rule); margin: 32px 0; }
+  .timeline { border-left: 2px solid var(--rule); margin-left: 8px; padding-left: 18px; }
+  .timeline-item { margin: 16px 0; }
+  .timeline-item h4 { margin-top: 0; color: var(--accent); }
+</style>
+</head>
+<body>
+
+<header>
+  <p class="meta">zer0 internal · engineering handoff · last updated 2026-05-21</p>
+  <h1>In-app trade execution — handoff v2</h1>
+  <p>
+    <span class="tag rose">CURRENT STATUS: BROKEN (decimals)</span>
+    <span class="tag warn">ERROR: invalid amounts</span>
+    <span class="tag">SCOPE: one rounding bug remains; the rest of V2 works</span>
+  </p>
+
+  <div class="card rose">
+    <h4>One-line summary</h4>
+    <p>
+      The V1→V2 migration (in-app-tradev1.html), the deposit-wallet flow, the ERC-7739 POLY_1271 signature wrapping, and the HMAC builder authentication are <em>all working end-to-end</em>. The user can now: connect → wrap USDC.e into the deposit wallet → relayer-batch approve pUSD → sign the order → submit. The pipeline reaches Polymarket's matcher cleanly. <strong>The matcher rejects with:</strong>
+    </p>
+    <pre><code>submit failed: clob_rejected: invalid amounts, the market buy orders
+maker amount supports a max accuracy of 2 decimals,
+taker amount a max of 4 decimals</code></pre>
+    <p>
+      This is a rounding-precision mismatch in <code>buildTypedData</code>. We're using the SDK's limit-order rounding rules, but submitting as FAK — which Polymarket validates against <em>market-order</em> decimal limits. The fix is small (constrained to one function in <code>src/lib/polymarket/clob.ts</code>). The previous engineer (Opus 4.7) said: <em>"I think this one should be easy."</em>
+    </p>
+  </div>
+</header>
+
+<h2>0. Read this first</h2>
+
+<div class="card warn">
+  <h4>Everything in §3 is load-bearing — don't undo it</h4>
+  <p>
+    This codebase went through three large arcs since v1: full V2 SDK migration, the deposit-wallet flow, and Polymarket builder authentication. Every piece is what makes the order signature actually <em>reach</em> Polymarket's matcher. The remaining bug is the matcher saying "I got your order, but the numbers don't fit my decimal rules." Treat the existing architecture as ground truth — fix the rounding in one place, don't refactor around it.
+  </p>
+  <p>
+    In particular: <strong>do not</strong> revert to the V1 SDK (Polymarket V2 retired V1 entirely on 2026-04-28), <strong>do not</strong> revert to direct EOA trading (rejected with "maker address not allowed, use the deposit wallet flow"), <strong>do not</strong> remove the ERC-7739 wrap suffix from order signatures (deposit-wallet <code>isValidSignature</code> needs it to parse the signature).
+  </p>
+</div>
+
+<h2>1. Where the code lives now</h2>
+
+<p>The trade pipeline as of this handoff. Read in this order — the bug is in #2.</p>
+
+<table>
+<thead><tr><th>File</th><th>What it does</th><th>Why it matters for this bug</th></tr></thead>
+<tbody>
+<tr>
+  <td><code>src/lib/polymarket/clob.ts</code></td>
+  <td>Server-side ClobClient V2 + the inline EIP-712 / ERC-7739 typed-data builder. Defines <code>ROUNDING_CONFIG</code>, <code>getOrderRawAmounts</code>, <code>buildTypedData</code>, <code>buildWrapSuffix</code>.</td>
+  <td><strong>Prime suspect.</strong> <code>getOrderRawAmounts</code> uses limit-order rounding: for BUY it rounds <code>rawMakerAmt</code> (in pUSD) to <code>cfg.amount</code> decimals (4 for tickSize "0.01"). Polymarket's matcher rejects market BUYs with maker decimals &gt; 2.</td>
+</tr>
+<tr>
+  <td><code>src/lib/polymarket/types-v2.ts</code></td>
+  <td>V2 EIP-712 constants: domain name, version "2", Order struct, TypedDataSign struct, V2_ORDER_TYPE_STRING. Pure data, no logic.</td>
+  <td>Source of the struct layout the matcher hashes against. Unrelated to the rounding bug but referenced everywhere.</td>
+</tr>
+<tr>
+  <td><code>src/lib/polymarket/contracts.ts</code></td>
+  <td>All V2 mainnet addresses: CTF Exchange V2, NegRisk V2, pUSD, USDC.e, CollateralOnramp, DepositWalletFactory, DepositWalletImplementation, POLYMARKET_RELAYER_URL.</td>
+  <td>Pinned to <code>@polymarket/builder-relayer-client/dist/config/index.js</code> and the SDK's V2 config. Not implicated.</td>
+</tr>
+<tr>
+  <td><code>src/lib/polymarket/deposit-wallet.ts</code></td>
+  <td>Browser helpers around <code>@polymarket/builder-relayer-client</code>. Derives the deterministic deposit-wallet address, deploys via the relayer, executes batched calls (e.g. pUSD.approve from inside the wallet). Pure helpers + a thin RelayClient wrapper.</td>
+  <td>Not implicated — by the time the order is being signed, the wallet is already deployed, funded, and approved.</td>
+</tr>
+<tr>
+  <td><code>src/lib/polymarket/builder-config.ts</code></td>
+  <td><code>getRelayerBuilderConfig()</code> returns the official <code>@polymarket/builder-signing-sdk</code> <code>BuilderConfig</code> in REMOTE mode pointing at <code>/api/polymarket/builder-sign</code>. <code>getClobBuilderConfig()</code> returns <code>{ builderCode }</code> for clob-client-v2 order attribution.</td>
+  <td>Not implicated.</td>
+</tr>
+<tr>
+  <td><code>src/lib/polymarket/clob-browser.ts</code></td>
+  <td>Browser ClobClient V2. <code>getOrCreatePolymarketClient</code> derives + caches per-EOA HMAC creds in localStorage and constructs ClobClient with <code>signatureType: POLY_1271</code>, <code>funderAddress: depositWallet</code>, <code>builderConfig</code>. <code>submitOrderFromBrowser</code> POSTs the signed order. <code>syncDepositWalletBalance</code> hits <code>/balance-allowance/update</code>.</td>
+  <td>The submit call is where the error <em>comes back from</em>, but the matcher's rejection text refers to the <em>amounts</em> we sent — not how we authenticated. The auth side is fine.</td>
+</tr>
+<tr>
+  <td><code>src/components/TradeCard.tsx</code></td>
+  <td>The full client choreography: chain switch → deploy wallet → approve USDC.e → wrap USDC.e → relayer-batched pUSD.approve → derive API key → balance sync → prepare → sign → submit → poll → notify. Status enum: <code>'idle' | 'checking-allowance' | 'deploying-wallet' | 'approving-usdce-onramp' | 'wrapping' | 'approving-wallet' | 'syncing-balance' | 'preparing' | 'signing' | 'deriving-keys' | 'submitting' | 'done' | 'cancelled' | 'error'</code>.</td>
+  <td>The red error text in the screenshot is rendered here (<code>setError</code>). The actual message passes through unchanged from the matcher's response.</td>
+</tr>
+<tr>
+  <td><code>src/app/api/trade/prepare/route.ts</code></td>
+  <td>Receives recommendation ID + user EOA + size. Looks up market meta + book price. Derives the deposit wallet from the EOA. Calls <code>buildTypedData({ maker: depositWallet, signatureType: 3, ... })</code>. Returns <code>{ tradeId, typedData, order, wrapSuffix, ... }</code>.</td>
+  <td>This is where the bad maker/taker amounts are computed (via <code>buildTypedData</code> → <code>getOrderRawAmounts</code> in clob.ts).</td>
+</tr>
+<tr>
+  <td><code>src/app/api/trade/allowance/route.ts</code></td>
+  <td>Preflight: derives deposit wallet, checks deployment, reads pUSD balance + allowance (scoped to deposit wallet), USDC.e balance + Onramp allowance (scoped to EOA), CTF approval.</td>
+  <td>Not implicated.</td>
+</tr>
+<tr>
+  <td><code>src/app/api/polymarket/builder-sign/route.ts</code></td>
+  <td>POST <code>{ method, path, body, timestamp? }</code> → returns the four <code>POLY_BUILDER_*</code> HMAC headers signed server-side using <code>POLYMARKET_BUILDER_SECRET</code>. Called by the SDK before every relayer + CLOB write.</td>
+  <td>Not implicated.</td>
+</tr>
+<tr>
+  <td><code>src/app/api/trade/notify/route.ts</code></td>
+  <td>Server endpoint the browser calls AFTER posting. Records outcome into <code>trades.failure_reason</code>.</td>
+  <td>Logs the matcher's error verbatim. The "invalid amounts…" message will appear here in <code>[trade/notify] rejected</code>.</td>
+</tr>
+<tr>
+  <td><code>src/lib/trades/validators.ts</code></td>
+  <td><code>SignedOrderShape</code> zod (V2 fields: salt/maker/signer/taker/tokenId/makerAmount/takerAmount/side/signatureType/timestamp/expiration/metadata/builder/signature). Validates shape only — Polymarket validates semantics.</td>
+  <td>Not implicated.</td>
+</tr>
+<tr>
+  <td><code>scripts/force-recommendation.ts</code></td>
+  <td>CLI for injecting test recommendations. <code>npm run force-rec -- --side BUY --size 5 --market 0x6114a8a3f9ac214f48a7e20d169f1c7a5c84082cb6f7058ed9fe1137b11fd0e7</code> is what's been used today.</td>
+  <td>Reproduction tool.</td>
+</tr>
+</tbody>
+</table>
+
+<h2>2. The flow today (end to end)</h2>
+
+<pre><code>┌──────────────────────────────────────────────────────────────────────────┐
+│ USER OPENS app.atzer0.xyz/app, CONNECTS WALLET (MetaMask / Coinbase)     │
+└──────────────────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│ TradeCard mounts → GET /api/trade/allowance?address=…                    │
+│   server derives the deposit wallet (CREATE2 over factory+impl+EOA),     │
+│   probes deployment, reads:                                              │
+│     - pUSD balance + allowance(V2Exchange) FOR THE DEPOSIT WALLET        │
+│     - USDC.e balance + allowance(Onramp)  FOR THE EOA                    │
+│     - CTF.isApprovedForAll(V2Exchange)    FOR THE DEPOSIT WALLET         │
+│   returns { depositWallet:{address,deployed}, pusd, usdce, ctf,          │
+│             exchange:{negRisk,address} }                                 │
+└──────────────────────────────────────────────────────────────────────────┘
+                            │
+                            ▼ (user clicks execute)
+┌──────────────────────────────────────────────────────────────────────────┐
+│ EXECUTE FLOW (TradeCard.tsx):                                            │
+│  1. chain switch to Polygon (0x89)                                       │
+│  2. if !depositWallet.deployed:                                          │
+│       deployDepositWalletFromBrowser → relayer.deployDepositWallet()     │
+│       (POSTs to /submit; relayer pays gas; no user signature)            │
+│  3. if usdce.allowance < amount: eth_sendTransaction → USDC.e.approve    │
+│       (MAX_UINT256, spender = Onramp)                                    │
+│  4. eth_sendTransaction → Onramp.wrap(USDC.e, depositWallet, amount)     │
+│       NOTE: `to` is the DEPOSIT WALLET, not the EOA                      │
+│  5. if pusd.allowance(V2Exchange) < threshold OR (SELL && !ctf.approved):│
+│       executeDepositWalletBatchFromBrowser([pUSDApprove, ctfApproveAll]) │
+│       (one EIP-712 batch signature; relayer submits; gas sponsored)      │
+│  6. getOrCreatePolymarketClient: bootstrap ClobClient with signatureType │
+│       POLY_1271 (3) + funderAddress = depositWallet + builderConfig      │
+│       (clob attribution code). On first-time-per-EOA prompts a one-off   │
+│       EIP-712 sign for createOrDeriveApiKey. Caches in                   │
+│       localStorage['zer0:pm-creds:&lt;eoa&gt;'].                              │
+│  7. syncDepositWalletBalance(client) → GET /balance-allowance/update     │
+│       (CLOB cache refresh so the matcher sees the new pUSD balance)      │
+│  8. POST /api/trade/prepare → server:                                    │
+│       maker = deriveDepositWalletAddress(EOA)  // for POLY_1271          │
+│       buildTypedData({ maker, signatureType: 3, ... }) returns           │
+│       { typedData: TypedDataSign envelope (outer EXCHANGE domain;        │
+│                     inner = Order + DepositWallet domain fields),        │
+│         order:     wire-body { salt, maker, signer, taker, tokenId,      │
+│                     makerAmount, takerAmount, side: 'BUY'|'SELL',        │
+│                     signatureType, timestamp, expiration, metadata,      │
+│                     builder },                                           │
+│         wrapSuffix: appDomainSep(32) || contentsHash(32) ||              │
+│                     V2_ORDER_TYPE_STRING bytes || lenHex(2) }            │
+│  9. eth_signTypedData_v4(typedData) → innerSig (65 bytes)                │
+│ 10. signedOrder = { ...order, signature: '0x'+innerSig+wrapSuffix }      │
+│ 11. submitOrderFromBrowser(client, signedOrder)  ← POSTs to              │
+│       clob.polymarket.com/order with POLY_BUILDER_* HMAC headers         │
+│       (signed by /api/polymarket/builder-sign per request)               │
+│ 12. ← Polymarket responds.                                               │
+│       { success: false, errorMsg: 'invalid amounts, ...' }               │
+│       This is where we fail today.                                       │
+└──────────────────────────────────────────────────────────────────────────┘
+</code></pre>
+
+<p>The trade card screenshot shows step 12: red error text under "try again", with the size box reading <code>5</code> and the share estimate <code>≈ 12.05 shares</code>. That's a BUY of 12.05 shares at ~$0.41 each on the US x Iran peace-deal market.</p>
+
+<h2>3. What we built since v1 (in chronological order)</h2>
+
+<p>These commits are on top of what v1's handoff left. Every item is load-bearing — see §0.</p>
+
+<div class="timeline">
+
+<div class="timeline-item">
+  <h4>a. V1 → V2 SDK migration (commit: V2 migration round)</h4>
+  <p>Polymarket cut over to CTF Exchange V2 + pUSD on <strong>2026-04-28</strong>. V1 orders started returning <code>order_version_missmatch</code> (the matcher's typo). The fix wasn't an SDK version bump — V1 SDK is already at its last release. The fix was the whole protocol.</p>
+  <p>Replaced <code>@polymarket/clob-client@5.8.1</code> with <code>@polymarket/clob-client-v2@1.0.6</code>. Swapped exchange addresses to V2:</p>
+  <ul>
+    <li>CTF Exchange V2: <code>0xE111180000d2663C0091e4f400237545B87B996B</code></li>
+    <li>NegRisk CTF Exchange V2: <code>0xe2222d279d744050d28e00520010520000310F59</code></li>
+    <li>pUSD: <code>0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB</code></li>
+    <li>CollateralOnramp: <code>0x93070a847efEf7F70739046A929D47a521F5B8ee</code></li>
+  </ul>
+  <p>EIP-712 domain version bumped from <code>"1"</code> to <code>"2"</code>; name still <code>"Polymarket CTF Exchange"</code>.</p>
+</div>
+
+<div class="timeline-item">
+  <h4>b. Inlined V2 typed-data construction</h4>
+  <p>Tried using the V2 SDK's <code>ExchangeOrderBuilderV2.buildOrderTypedData(order)</code> but the SDK's package.json only exports <code>.</code> (no subpath imports — TS resolves <code>@polymarket/clob-client-v2/dist/...</code> as "Cannot find module"). And <code>OrderBuilder.buildOrder()</code> enforces <code>signer === connectedWalletAddress</code> — we sign in the browser with the user's key, but the relay key (RELAY_PRIVATE_KEY) is the server-side ClobClient signer. So the SDK's order builder is unusable for our split-signer flow.</p>
+  <p>Inlined the constants in <code>src/lib/polymarket/types-v2.ts</code> (verified against <code>node_modules/@polymarket/clob-client-v2/dist/order-utils/model/ctfExchangeV2TypedData.js</code>) and reimplemented <code>buildTypedData</code> + <code>getOrderRawAmounts</code> + <code>generateOrderSalt</code> directly. <strong>This is where the bug is.</strong></p>
+</div>
+
+<div class="timeline-item">
+  <h4>c. CollateralOnramp wrap flow (USDC.e → pUSD)</h4>
+  <p>V2 trades against pUSD held <em>by the deposit wallet</em>, not USDC.e in the EOA. Built <code>sendApproveUsdcForOnramp</code> + <code>sendWrapUsdc(ethereum, from, onramp, to, amount)</code> in <code>src/lib/web3/approve.ts</code> — calls <code>Onramp.wrap(USDC.e, to, amount)</code> with <code>to = depositWalletAddress</code>. Mints fresh pUSD inside the wallet on every wrap call.</p>
+</div>
+
+<div class="timeline-item">
+  <h4>d. Deposit-wallet flow (the big one)</h4>
+  <p>Polymarket V2 server-side rejects every EOA-maker order with <code>clob_rejected: maker address not allowed, please use the deposit wallet flow</code>. Universal — confirmed via py-clob-client-v2 issues #51/#52/#53, the Firefly tweet, no documented allowlist. The deposit wallet <em>is</em> the V2 trading identity.</p>
+  <p>Each user gets a per-EOA ERC-1967 minimal proxy, CREATE2-deterministic from <code>(factory, bytes32(owner))</code>:</p>
+  <ul>
+    <li>DepositWalletFactory: <code>0x00000000000Fb5C9ADea0298D729A0CB3823Cc07</code> (role-gated, only Polymarket's relayer can call <code>deploy</code>)</li>
+    <li>DepositWalletImplementation: <code>0x58CA52ebe0DadfdF531Cde7062e76746de4Db1eB</code> (current; the factory supports <code>setImplementation</code> for future upgrades)</li>
+  </ul>
+  <p>Built <code>src/lib/polymarket/deposit-wallet.ts</code>:</p>
+  <ul>
+    <li><code>deriveDepositWalletAddress(eoa)</code> — pure CREATE2 via the SDK's <code>deriveDepositWallet</code> helper.</li>
+    <li><code>isDepositWalletDeployed(eoa)</code> — multi-RPC <code>getCode</code> probe.</li>
+    <li><code>getBrowserRelayClient</code> — instantiates <code>@polymarket/builder-relayer-client</code>'s <code>RelayClient</code> with the ethers v5 JsonRpcSigner over <code>window.ethereum</code>.</li>
+    <li><code>deployDepositWalletFromBrowser</code> — POST <code>WALLET_CREATE</code> to relayer-v2.polymarket.com. Sponsored; no user signature.</li>
+    <li><code>executeDepositWalletBatchFromBrowser</code> — signs a Batch EIP-712 payload (domain "DepositWallet" v "1", verifyingContract = wallet) authorizing the relayer to execute calls FROM inside the wallet. We use this for the one-time pUSD.approve(V2Exchange) and (SELL only) CTF.setApprovalForAll(V2Exchange) — both bundled in a single signature.</li>
+    <li><code>encodePusdApproveCall</code> / <code>encodeCtfApproveAllCall</code> — call-data builders for the batch.</li>
+  </ul>
+  <p>Polymarket relayer URL: <code>https://relayer-v2.polymarket.com/</code></p>
+</div>
+
+<div class="timeline-item">
+  <h4>e. POLY_1271 ERC-7739 nested-TypedDataSign signature</h4>
+  <p>Deposit-wallet orders use <code>signatureType = 3</code> (POLY_1271). The signature isn't a raw EIP-712 sig — it's an <strong>ERC-7739 wrap</strong>:</p>
+  <pre><code>signature = innerSig(65 bytes)
+          || appDomainSep(32 bytes)
+          || contentsHash(32 bytes)
+          || V2_ORDER_TYPE_STRING bytes (186 bytes)
+          || lenHex(2 bytes, big-endian uint16 of typeString length)</code></pre>
+  <p>where:</p>
+  <ul>
+    <li><code>innerSig</code> = <code>eth_signTypedData_v4(typedData)</code> where typedData has <code>primaryType: 'TypedDataSign'</code>, outer EIP-712 domain = V2 EXCHANGE domain ("Polymarket CTF Exchange" / "2" / chain 137 / V2 exchange contract), and <code>message</code> contains <code>{ contents: orderMessage, name: 'DepositWallet', version: '1', chainId: 137, verifyingContract: depositWallet, salt: bytes32(0) }</code>.</li>
+    <li><code>appDomainSep</code> = <code>keccak256(EIP712Domain || nameHash || versionHash || chainId || verifyingContract)</code> — the exchange domain separator.</li>
+    <li><code>contentsHash</code> = <code>keccak256(ORDER_TYPEHASH || all order struct fields)</code>.</li>
+    <li>The deposit wallet's <code>isValidSignature</code> uses the typeString suffix to parse out the inner ECDSA, recover the EOA owner, and confirm the order was signed by the wallet's controlling key.</li>
+  </ul>
+  <p>All of this is in <code>src/lib/polymarket/clob.ts</code> (<code>buildTypedData</code> + <code>buildWrapSuffix</code> + <code>computeAppDomainSep</code> + <code>computeOrderContentsHash</code>) and <code>src/components/TradeCard.tsx</code> (the concat <code>'0x' + innerSig.slice(2) + wrapSuffix.slice(2)</code>).</p>
+  <p><strong>Verified working:</strong> the matcher accepts the signature (which proves the wrap is correct); only the amounts fail validation.</p>
+</div>
+
+<div class="timeline-item">
+  <h4>f. Polymarket HMAC builder authentication (relayer auth)</h4>
+  <p>The first attempt at the deposit-wallet flow hit <code>POST relayer-v2.polymarket.com/submit → 401 { error: 'invalid authorization' }</code>. Polymarket's relayer requires builder authentication on every <code>/submit</code> call — even for <code>WALLET_CREATE</code>.</p>
+  <p>The product owner registered as a builder at <code>polymarket.com/settings?tab=builder</code> → <em>Create new</em> → <em>View API Details</em>. That dialog shows the HMAC trio <strong>once</strong> with the warning: <em>"Never share your key or put it in client-side code."</em></p>
+  <p>Wired the official <code>@polymarket/builder-signing-sdk</code> in REMOTE mode:</p>
+  <ul>
+    <li>Pinned to <code>^0.0.8</code> (must match <code>builder-relayer-client</code>'s peer; <code>1.0.0</code> caused two divergent <code>BuilderConfig</code> classes in node_modules and TS rejected the cross-version pass).</li>
+    <li><code>POLYMARKET_BUILDER_API_KEY</code>, <code>POLYMARKET_BUILDER_SECRET</code>, <code>POLYMARKET_BUILDER_PASSPHRASE</code> in <code>.env.local</code> and Vercel — server-only, never <code>NEXT_PUBLIC_</code>.</li>
+    <li><code>NEXT_PUBLIC_POLYMARKET_BUILDER_CODE</code> (the bytes32 attribution code) is public — gets stamped into every V2 order's <code>builder</code> field.</li>
+    <li><code>src/app/api/polymarket/builder-sign/route.ts</code> takes <code>POST { method, path, body, timestamp? }</code> and returns <code>{ POLY_BUILDER_API_KEY, POLY_BUILDER_TIMESTAMP, POLY_BUILDER_PASSPHRASE, POLY_BUILDER_SIGNATURE }</code> using <code>buildHmacSignature(secret, ts, method, path, body)</code>. Rate-limited per IP.</li>
+    <li>Browser <code>BuilderConfig</code> is REMOTE-mode pointing at <code>${window.location.origin}/api/polymarket/builder-sign</code> — the SDK calls our route before every relayer + CLOB write, attaches the returned headers to the outbound request.</li>
+  </ul>
+  <p>The secret never reaches the browser. The api-key + passphrase do (the SDK sends them as headers), but Polymarket's auth design treats the secret as the only credential that matters.</p>
+</div>
+
+<div class="timeline-item">
+  <h4>g. Balance sync after fund/approve</h4>
+  <p>Polymarket's matcher caches per-account balances. After wrapping pUSD into the deposit wallet and approving from inside it, the cache is stale and the matcher would reject orders with insufficient-balance. <code>syncDepositWalletBalance(client)</code> in <code>clob-browser.ts</code> calls <code>client.updateBalanceAllowance({ asset_type: 'COLLATERAL' })</code> right before order submission. Best-effort — if it fails we log and continue.</p>
+</div>
+
+</div>
+
+<h2>4. The current bug — invalid amounts (decimals)</h2>
+
+<div class="card rose">
+  <h4>What we see</h4>
+  <p>After the order signs and gets POSTed, Polymarket's response body is:</p>
+  <pre><code>{ success: false, errorMsg: 'invalid amounts, the market buy orders maker amount supports a max accuracy of 2 decimals, taker amount a max of 4 decimals' }</code></pre>
+  <p>The TradeCard maps it into <code>{ kind: 'rejected', reason: errorMsg }</code> and renders the red text. The trade row in <code>trades</code> gets <code>status='rejected'</code> + <code>failure_reason</code> populated.</p>
+</div>
+
+<h3>What this error <em>means</em></h3>
+
+<p>Polymarket's V2 matcher enforces per-side, per-order-type decimal limits on the <em>raw</em> maker/taker amounts. For <strong>market BUY</strong> orders specifically (FAK / FOK), the rule is:</p>
+
+<ul>
+  <li><strong>makerAmount</strong> (in pUSD, what the buyer pays) — at most 2 decimal places of precision. i.e. cents. <code>4.94</code> ✓, <code>4.9405</code> ✗.</li>
+  <li><strong>takerAmount</strong> (in shares, what the buyer receives) — at most 4 decimal places. <code>12.0500</code> ✓.</li>
+</ul>
+
+<p>These limits are different from the limit-order rules (limit orders use <code>(size: tick-dependent, amount: tick-dependent)</code> from <code>ROUNDING_CONFIG</code>). The V2 SDK has separate helpers for the two paths:</p>
+
+<ul>
+  <li><code>node_modules/@polymarket/clob-client-v2/dist/order-builder/helpers/buildOrderCreationArgs.js</code> — limit orders (GTC, GTD)</li>
+  <li><code>node_modules/@polymarket/clob-client-v2/dist/order-builder/helpers/buildMarketOrderCreationArgs.js</code> — market orders (FAK, FOK)</li>
+  <li><code>node_modules/@polymarket/clob-client-v2/dist/order-builder/helpers/getMarketOrderRawAmounts.js</code> — the rounding helper for market amounts</li>
+</ul>
+
+<p>Our inlined <code>buildTypedData</code> uses the <em>limit</em> path's rounding even though we submit as <code>OrderType.FAK</code>.</p>
+
+<h3>Where the suspect code is</h3>
+
+<p>In <code>src/lib/polymarket/clob.ts</code>, <code>getOrderRawAmounts</code> (lines ~91–119). BUY branch:</p>
+
+<pre><code>if (side === 'BUY') {
+  const rawTakerAmt = roundDown(size, cfg.size);            // shares, 2 decimals (cfg.size=2)
+  let rawMakerAmt = rawTakerAmt * rawPrice;                  // USD value
+  if (decimalPlaces(rawMakerAmt) &gt; cfg.amount) {             // cfg.amount=4 for tickSize "0.01"
+    rawMakerAmt = roundUp(rawMakerAmt, cfg.amount + 4);
+    if (decimalPlaces(rawMakerAmt) &gt; cfg.amount) {
+      rawMakerAmt = roundDown(rawMakerAmt, cfg.amount);      // 4 decimals ← TOO MANY for market BUY
+    }
+  }
+  return { rawMakerAmt, rawTakerAmt };
+}</code></pre>
+
+<p>For the reproduction trade (size=$5, price=$0.41, tickSize=0.01):</p>
+<ul>
+  <li><code>rawTakerAmt</code> = roundDown(5/0.41, 2) = roundDown(12.1951…, 2) = <code>12.19</code>. <em>(Wait — sizeShares is computed in prepare/route.ts at line 160 as <code>sizeUsd / price</code>, then passed to <code>buildTypedData</code> as <code>size</code>. So size=12.1951, then roundDown to 2 dec = 12.19. The "12.05 shares" in the UI must use a slightly different price — possibly the recommendation price vs the book-crossing price.)</em></li>
+  <li><code>rawMakerAmt</code> = 12.19 * 0.41 = 4.9979 (or similar). 4 decimals.</li>
+  <li><code>parseUnits('4.9979', 6)</code> = <code>4_997_900</code>.</li>
+  <li>The matcher reads this as $4.9979 — 4 decimals — and rejects.</li>
+</ul>
+
+<p>For a market BUY, we want <code>rawMakerAmt</code> snapped to 2 decimals: <code>4.99</code> (round down) → <code>4_990_000</code>.</p>
+
+<h3>Where to look for the canonical rounding</h3>
+
+<p>Read <code>node_modules/@polymarket/clob-client-v2/dist/order-builder/helpers/getMarketOrderRawAmounts.js</code> and <code>buildMarketOrderCreationArgs.js</code>. They're the SDK's own implementation of market-order rounding. Compare them to <code>getOrderRawAmounts.js</code> (limit) — the difference between the two files <em>is</em> the fix.</p>
+
+<h2>5. Most likely root cause + fix sketch (ranked)</h2>
+
+<ol>
+  <li>
+    <strong>Limit-order rounding applied to a market order.</strong> Highest confidence. The SDK explicitly distinguishes the two paths; our inline reimplementation only ports the limit path. Fix: either (a) add a market-order branch in <code>getOrderRawAmounts</code> (or a sibling helper) that rounds maker/taker per market rules, OR (b) directly import the SDK's <code>buildMarketOrderCreationArgs</code> — but the package's <code>exports</code> field blocks subpath imports, so probably inline again.
+    <p class="meta">Verify: read the two SDK files, diff them, port the difference. Probably ~10 lines.</p>
+  </li>
+  <li>
+    <strong>Per-market tick-size mismatch.</strong> The market's actual tickSize might not be "0.01" — could be "0.001" or "0.0001". If we hard-default to "0.01" but the market is finer, the SDK's ROUNDING_CONFIG yields different (size, amount) precision. Less likely because the matcher's error names a fixed 2/4-decimal rule, not "matches the tick", but worth confirming the tickSize value coming out of <code>getMarketMeta</code> for the test market.
+    <p class="meta">Verify: log <code>tickSize</code> in <code>prepare/route.ts</code> right before <code>buildTypedData</code>.</p>
+  </li>
+  <li>
+    <strong>BUY vs SELL semantic swap.</strong> In market BUY, maker = pUSD, taker = shares. In market SELL, the swap would flip (maker = shares, taker = pUSD). Our error refers to BUY rules. The SELL branch (currently untested end-to-end) might have the same shape issue mirrored. Out of scope for this bug but worth a flag.
+  </li>
+  <li>
+    <strong>Off-by-one in roundUp/roundDown helpers.</strong> Our <code>roundUp</code> and <code>roundDown</code> use <code>Math.ceil(n * f) / f</code> / <code>Math.floor(n * f) / f</code> — float precision can introduce a phantom 5th decimal. If the matcher sees <code>4.9978999999999998</code> the JSON serializer might emit a long string. Lower likelihood given the SDK uses the same Math idiom.
+  </li>
+</ol>
+
+<h2>6. Concrete next steps</h2>
+
+<ol>
+  <li>
+    Read <code>node_modules/@polymarket/clob-client-v2/dist/order-builder/helpers/getMarketOrderRawAmounts.js</code> and <code>buildMarketOrderCreationArgs.js</code> verbatim. Note the maker/taker rounding precision they apply for market BUY and market SELL.
+  </li>
+  <li>
+    In <code>src/lib/polymarket/clob.ts</code>, either:
+    <ul>
+      <li>Add a <code>getMarketOrderRawAmounts</code> sibling and route <code>buildTypedData</code> to it when the eventual <code>OrderType</code> is FAK/FOK. <code>buildTypedData</code> currently doesn't know the order type — pass it in via <code>BuildTypedDataArgs</code>.</li>
+      <li>OR change <code>getOrderRawAmounts</code> in place to apply market rules unconditionally, since today every order we submit is FAK. Cheap fix; we lose the ability to do limit orders later.</li>
+    </ul>
+  </li>
+  <li>
+    Reproduce: <code>npm run force-rec -- --side BUY --size 5 --market 0x6114a8a3f9ac214f48a7e20d169f1c7a5c84082cb6f7058ed9fe1137b11fd0e7</code>, click execute on <code>localhost:3000/app</code>, watch the red error vanish. Vercel <code>[trade/notify] …</code> logs should show <code>kind=filled</code> with <code>txHashes</code> populated.
+  </li>
+  <li>
+    On Polygonscan: confirm a pUSD <code>Transfer</code> from the deposit wallet to the V2 Exchange and a CTF token credit landing on the deposit wallet. <em>That's</em> the demo proof-of-life.
+  </li>
+</ol>
+
+<h2>7. Reproduction setup</h2>
+
+<h4>Required env vars (.env.local + Vercel)</h4>
+<ul>
+  <li><code>NEXT_PUBLIC_SUPABASE_URL</code> + <code>SUPABASE_SERVICE_KEY</code> — DB.</li>
+  <li><code>RELAY_PRIVATE_KEY</code> — used only for server-side ClobClient reads (<code>getMarket</code>, <code>getOrderBook</code>, <code>getOrder</code>). Never signs orders.</li>
+  <li><code>POLYMARKET_BUILDER_API_KEY</code>, <code>POLYMARKET_BUILDER_SECRET</code>, <code>POLYMARKET_BUILDER_PASSPHRASE</code> — server-only HMAC trio for relayer auth. Issued at <code>polymarket.com/settings?tab=builder</code> → "Create new" → "View API Details" (one-time view, so it's saved).</li>
+  <li><code>NEXT_PUBLIC_POLYMARKET_BUILDER_CODE</code> — public bytes32 attribution code. Currently <code>0x821f1d0e3a9e8b8f83bee32ffc03c997255b1175ce045207091edfa14bfb4658</code>.</li>
+  <li><code>OPENAI_API_KEY</code>, <code>GROQ_API_KEY</code>, <code>INNGEST_*</code> — not relevant to this bug.</li>
+</ul>
+
+<h4>Required user setup (test wallet)</h4>
+<ul>
+  <li>An EVM wallet on Polygon with USDC.e.</li>
+  <li>A small POL balance for gas (USDC.e approve + wrap require user-side gas).</li>
+  <li>The deposit wallet will be auto-deployed by Polymarket's relayer on first execute (no user gas).</li>
+  <li>If the wallet has previously trade on polymarket.com V2, the deposit wallet may already be deployed and have pUSD inside — the flow will detect this via <code>isDepositWalletDeployed</code> + <code>getPusdBalance(depositWallet)</code> and skip the redundant steps.</li>
+</ul>
+
+<h4>Reproducing the error</h4>
+<ol>
+  <li><code>npm run force-rec -- --side BUY --size 5 --market 0x6114a8a3f9ac214f48a7e20d169f1c7a5c84082cb6f7058ed9fe1137b11fd0e7</code></li>
+  <li>Open <code>localhost:3000/app</code> (or <code>app.atzer0.xyz/app</code> in prod). The card appears in OPEN TRADES.</li>
+  <li>Click execute. Wallet popups in this order (some skipped if the wallet's already set up):
+    <ol style="list-style: lower-alpha;">
+      <li>chain switch to Polygon</li>
+      <li>USDC.e approve (Onramp) — only if first time</li>
+      <li>USDC.e → pUSD wrap into the deposit wallet</li>
+      <li>relayer-batch sign (pUSD.approve(V2Exchange) inside the wallet) — only if first time</li>
+      <li>Polymarket API-key derivation EIP-712 sign — only if first time per EOA</li>
+      <li>order TypedDataSign — every trade</li>
+    </ol>
+  </li>
+  <li>Wait for the polling phase (~1-8s).</li>
+  <li>Card shows: <code>submit failed: clob_rejected: invalid amounts, …</code> in red.</li>
+</ol>
+
+<h2>8. Things that work today (don't break these)</h2>
+
+<ul>
+  <li>Wallet connect via injected EIP-1193 provider.</li>
+  <li>Chain auto-switch + add-chain fallback.</li>
+  <li>Allowance preflight: pUSD/USDC.e/CTF reads scoped to the right address (wallet vs EOA), multi-RPC fallback.</li>
+  <li>Deposit-wallet deterministic address derivation (matches the SDK's <code>deriveDepositWallet</code>; verified an arbitrary EOA returns the correct on-chain wallet address).</li>
+  <li>Deposit-wallet deployment via Polymarket relayer (sponsored gas, no user signature, <code>WALLET_CREATE</code>).</li>
+  <li>USDC.e → pUSD wrap with <code>to = depositWallet</code>.</li>
+  <li>Relayer-batched pUSD.approve(V2Exchange) signed from inside the deposit wallet (one EIP-712 Batch signature).</li>
+  <li>Polymarket HMAC builder authentication — secret stays server-side; per-request signing; SDK in REMOTE mode.</li>
+  <li>ClobClient V2 with <code>signatureType: POLY_1271</code>, <code>funderAddress: depositWallet</code>, <code>builderConfig: { builderCode }</code>.</li>
+  <li>API-key derivation cached in <code>localStorage['zer0:pm-creds:&lt;eoa&gt;']</code>.</li>
+  <li>ERC-7739 wrap suffix construction (<code>buildWrapSuffix</code> in clob.ts) — the matcher accepts the signature, proving the wrap math is correct.</li>
+  <li>Balance sync (<code>updateBalanceAllowance</code>) — the matcher sees the freshly-wrapped pUSD.</li>
+  <li>brain-tick recommendations every 30 minutes.</li>
+  <li>RecentTradesBubble per-user feed.</li>
+  <li>force-recommendation CLI.</li>
+</ul>
+
+<h2>9. Things in flight / future work</h2>
+
+<ul>
+  <li><strong>SELL flow end-to-end test.</strong> SELL needs CTF.setApprovalForAll(V2Exchange) from inside the deposit wallet. Code path exists but hasn't been exercised. If the BUY decimals bug has a mirror for SELL (maker = shares, taker = pUSD), fix both.</li>
+  <li><strong>Mid-flow recovery.</strong> If the user closes the tab between wrap and approve, the next execute should detect the partial state and resume. Today the preflight handles this implicitly via the allowance route — the flow re-detects what's needed. Could be tightened with explicit "this is step 3 of 6" UI.</li>
+  <li><strong>Pre-existing deposit wallet detection (polymarket.com users).</strong> Users who've used polymarket.com V2 already have a deposit wallet (auto-deployed by their UI). The preflight already detects this via <code>isDepositWalletDeployed</code>, but the pUSD balance / V2-Exchange-approval scoping might still need a fresh approve if the polymarket.com UI used different defaults.</li>
+  <li><strong>Builder fee bookkeeping.</strong> With <code>builderCode</code> set, every successful trade through zer0 accrues builder fees on Polymarket's side. Need a dashboard or claim flow eventually.</li>
+  <li><strong>Telegram conversational trading (v2).</strong> Design doc at <code>zer0-telegramv2.html</code>. Builds on the in-app flow once decimals is fixed.</li>
+</ul>
+
+<h2>10. Reference doc index</h2>
+
+<ul>
+  <li><code>in-app-tradev1.html</code> — V1 handoff. Covers the V1→V2 migration diagnosis + deposit-wallet flow research. Read for journey context.</li>
+  <li><code>in-app-tradev2.html</code> — THIS doc. Decimals bug + everything since v1.</li>
+  <li><code>zer0.md</code> — north-star architecture.</li>
+  <li><code>zer0-telegramv2.html</code> — Telegram bot design.</li>
+  <li><code>scripts/force-recommendation.ts</code> — reproduction tool.</li>
+  <li><code>supabase/migrations/0006_trades.sql</code> — trades table schema.</li>
+  <li><a href="https://docs.polymarket.com/v2-migration" target="_blank">Polymarket V2 migration guide</a></li>
+  <li><a href="https://docs.polymarket.com/trading/deposit-wallets" target="_blank">Polymarket deposit wallets docs</a></li>
+  <li><a href="https://docs.polymarket.com/api-reference/relayer" target="_blank">Polymarket relayer API reference</a></li>
+  <li><a href="https://github.com/Polymarket/magic-safe-builder-example" target="_blank">Polymarket magic-safe-builder-example</a> — canonical builder auth pattern; we mirror their <code>/api/polymarket/sign</code> route.</li>
+  <li><a href="https://polymarket.com/settings?tab=builder" target="_blank">polymarket.com builder settings</a> — where the HMAC trio is generated.</li>
+</ul>
+
+<hr />
+
+<p class="meta">If you read all 10 sections you have the full picture. If you're skimming: §0, §4, §5, §6. If you're debugging right now: open <code>node_modules/@polymarket/clob-client-v2/dist/order-builder/helpers/getMarketOrderRawAmounts.js</code> and <code>buildMarketOrderCreationArgs.js</code>, then look at <code>src/lib/polymarket/clob.ts</code> <code>getOrderRawAmounts</code>. The diff between the two SDK files is the patch. Good luck.</p>
+
+</body>
+</html>

@@ -86,9 +86,9 @@ function roundUp(n: number, decimals: number): number {
   return Math.ceil(n * f) / f;
 }
 
-// Mirrors V2 SDK's `getOrderRawAmounts`: BUY rounds taker (shares) down,
-// SELL rounds maker (shares) down; the other side is derived by *price
-// then snapped to the tick's amount precision.
+// Mirrors V2 SDK's `getOrderRawAmounts` (limit-order path): BUY rounds taker
+// (shares) down, SELL rounds maker (shares) down; the other side is derived
+// by *price then snapped to the tick's amount precision.
 function getOrderRawAmounts(
   side: 'BUY' | 'SELL',
   size: number,
@@ -108,6 +108,44 @@ function getOrderRawAmounts(
     return { rawMakerAmt, rawTakerAmt };
   }
   const rawMakerAmt = roundDown(size, cfg.size);
+  let rawTakerAmt = rawMakerAmt * rawPrice;
+  if (decimalPlaces(rawTakerAmt) > cfg.amount) {
+    rawTakerAmt = roundUp(rawTakerAmt, cfg.amount + 4);
+    if (decimalPlaces(rawTakerAmt) > cfg.amount) {
+      rawTakerAmt = roundDown(rawTakerAmt, cfg.amount);
+    }
+  }
+  return { rawMakerAmt, rawTakerAmt };
+}
+
+// Mirrors V2 SDK's `getMarketOrderRawAmounts` (market FAK/FOK path). The
+// matcher enforces tighter per-side precision than the limit path:
+//   - market BUY  → makerAmount (pUSD) snapped to cfg.size decimals (2 for
+//                   tickSize "0.01"), takerAmount (shares) derived
+//   - market SELL → makerAmount (shares) snapped to cfg.size decimals,
+//                   takerAmount (pUSD) derived
+// Critically, the SDK's market path uses `roundDown(price)` (not roundNormal)
+// and its `amount` input means USD for BUY and shares for SELL — different
+// from the limit path where `size` is always shares.
+function getMarketOrderRawAmounts(
+  side: 'BUY' | 'SELL',
+  amount: number,
+  price: number,
+  cfg: RoundConfig,
+): { rawMakerAmt: number; rawTakerAmt: number } {
+  const rawPrice = roundDown(price, cfg.price);
+  if (side === 'BUY') {
+    const rawMakerAmt = roundDown(amount, cfg.size);
+    let rawTakerAmt = rawMakerAmt / rawPrice;
+    if (decimalPlaces(rawTakerAmt) > cfg.amount) {
+      rawTakerAmt = roundUp(rawTakerAmt, cfg.amount + 4);
+      if (decimalPlaces(rawTakerAmt) > cfg.amount) {
+        rawTakerAmt = roundDown(rawTakerAmt, cfg.amount);
+      }
+    }
+    return { rawMakerAmt, rawTakerAmt };
+  }
+  const rawMakerAmt = roundDown(amount, cfg.size);
   let rawTakerAmt = rawMakerAmt * rawPrice;
   if (decimalPlaces(rawTakerAmt) > cfg.amount) {
     rawTakerAmt = roundUp(rawTakerAmt, cfg.amount + 4);
@@ -189,9 +227,17 @@ function normaliseTickSize(raw: unknown): TickSize {
   return '0.01';
 }
 
+export type OrderTypeArg = 'FAK' | 'FOK' | 'GTC' | 'GTD';
+
 export interface BuildTypedDataArgs {
   tokenId: string;
   price: number;
+  /**
+   * Order size. The unit depends on `orderType`:
+   *   - Limit (GTC/GTD): always SHARES (BUY and SELL).
+   *   - Market (FAK/FOK): USD for BUY, SHARES for SELL — mirrors the V2
+   *     SDK's `UserMarketOrder.amount` convention.
+   */
   size: number;
   side: 'BUY' | 'SELL';
   /** The on-chain account the matcher debits (proxy / safe / deposit wallet / EOA). */
@@ -208,6 +254,15 @@ export interface BuildTypedDataArgs {
   negRisk: boolean;
   /** Optional GTD expiration (unix seconds). "0" = no expiry. */
   expiration?: number;
+  /**
+   * Selects the rounding rules. Defaults to 'GTC' (limit precision). Market
+   * orders use looser precision on one side (cfg.size decimals) so the
+   * matcher will accept them — matters because limit precision (cfg.amount,
+   * 4 decimals for tick "0.01") gets rejected by the FAK/FOK validator with
+   * "invalid amounts, the market buy orders maker amount supports a max
+   * accuracy of 2 decimals".
+   */
+  orderType?: OrderTypeArg;
 }
 
 interface V2OrderTypedData {
@@ -396,12 +451,11 @@ function buildWrapSuffix(
  */
 export async function buildTypedData(args: BuildTypedDataArgs): Promise<PreparedOrder> {
   const cfg = ROUNDING_CONFIG[args.tickSize];
-  const { rawMakerAmt, rawTakerAmt } = getOrderRawAmounts(
-    args.side,
-    args.size,
-    args.price,
-    cfg,
-  );
+  const orderType: OrderTypeArg = args.orderType ?? 'GTC';
+  const isMarket = orderType === 'FAK' || orderType === 'FOK';
+  const { rawMakerAmt, rawTakerAmt } = isMarket
+    ? getMarketOrderRawAmounts(args.side, args.size, args.price, cfg)
+    : getOrderRawAmounts(args.side, args.size, args.price, cfg);
   const makerAmount = parseUnits(rawMakerAmt.toString(), COLLATERAL_DECIMALS).toString();
   const takerAmount = parseUnits(rawTakerAmt.toString(), COLLATERAL_DECIMALS).toString();
 
