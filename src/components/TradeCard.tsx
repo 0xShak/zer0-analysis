@@ -156,6 +156,12 @@ export function TradeCard({
       }
       setClobOrderId(submitBody.clobOrderId);
       setStatus('done');
+      // Tell RecentTradesBubble (or any other listener) to refresh — the
+      // trades-list endpoint reads from the trades table the submit route
+      // just wrote to, so the new row should appear on the next fetch.
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('zer0:trade-submitted'));
+      }
     } catch (e) {
       setStatus('error');
       // EIP-1193 errors from injected wallets are plain `{ code, message }`

@@ -13,7 +13,13 @@
       "Bash(git commit -m ' *)",
       "Bash(git push *)",
       "Bash(npx tsc *)",
-      "Bash(npx eslint *)"
+      "Bash(npx eslint *)",
+      "WebFetch(domain:help.x.com)",
+      "WebFetch(domain:devcommunity.x.com)",
+      "Bash(findstr /R /S \"from.*thoughts\" src\\\\app\\\\api\\\\* src\\\\components\\\\*)",
+      "Bash(findstr /R /S \"\\\\.channel\\\\\\(|postgres_changes\" src\\\\*)",
+      "Bash(findstr /R /S \"from.*thoughts\" src\\\\app\\\\api)",
+      "Bash(findstr /v node_modules)"
     ]
   }
 }

@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { ThoughtsBubble } from './ThoughtsBubble';
 import { TradesBubble } from './TradesBubble';
+import { RecentTradesBubble } from './RecentTradesBubble';
 import { WalletConnect } from '@/components/WalletConnect';
 
 export function ChatHeader({
@@ -70,6 +71,7 @@ export function ChatHeader({
       <div className="flex items-center gap-2">
         <ThoughtsBubble />
         <TradesBubble userAddress={walletAddress} />
+        <RecentTradesBubble userAddress={walletAddress} />
         <WalletConnect onConnect={onWalletConnect} />
       </div>
     </header>

@@ -148,31 +148,52 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // ---- soft-rejection detection ----
+  // Polymarket SDK's postOrder resolves (does NOT throw) with
+  // { success: false, errorMsg } when the API rejects an order — bad
+  // signature, insufficient balance, missing CTF allowance, etc. Without
+  // this check we'd record a phantom 'submitted' with clob_order_id=null.
+  const resultObj =
+    typeof clobResult === 'object' && clobResult !== null
+      ? (clobResult as Record<string, unknown>)
+      : {};
+  if (resultObj.success === false) {
+    const errorMsg =
+      typeof resultObj.errorMsg === 'string' && resultObj.errorMsg
+        ? resultObj.errorMsg
+        : 'CLOB rejected order';
+    console.error('[trade/submit] CLOB soft-rejection', { tradeId, errorMsg });
+    await supabase
+      .from('trades')
+      .update({
+        status: 'rejected',
+        failure_reason: errorMsg.slice(0, 1000),
+        signed_order: sdkOrder as unknown as Json,
+      })
+      .eq('id', tradeId);
+    return Response.json(
+      { error: 'clob_rejected', reason: errorMsg },
+      { status: 422 },
+    );
+  }
+
   // ---- success ----
   const clobOrderId =
-    (typeof clobResult === 'object' &&
-      clobResult !== null &&
-      'orderID' in (clobResult as Record<string, unknown>) &&
-      String((clobResult as Record<string, unknown>).orderID)) ||
-    (typeof clobResult === 'object' &&
-      clobResult !== null &&
-      'orderId' in (clobResult as Record<string, unknown>) &&
-      String((clobResult as Record<string, unknown>).orderId)) ||
+    (typeof resultObj.orderID === 'string' && resultObj.orderID) ||
+    (typeof resultObj.orderId === 'string' && resultObj.orderId) ||
     null;
+  if (!clobOrderId) {
+    console.warn('[trade/submit] CLOB success without orderID', {
+      tradeId,
+      shape: Object.keys(resultObj),
+    });
+  }
 
-  const accepted =
-    typeof clobResult === 'object' &&
-    clobResult !== null &&
-    'success' in (clobResult as Record<string, unknown>) &&
-    (clobResult as Record<string, unknown>).success !== false;
-
-  const nextStatus = accepted ? 'submitted' : 'submitted';
   const now = new Date().toISOString();
-
   const { error: updateErr } = await supabase
     .from('trades')
     .update({
-      status: nextStatus,
+      status: 'submitted',
       clob_order_id: clobOrderId,
       signed_order: sdkOrder as unknown as Json,
       submitted_at: now,
@@ -182,30 +203,16 @@ export async function POST(req: NextRequest) {
     console.error('[trade/submit] trades update failed', updateErr);
   }
 
-  // ---- emit an app-scope thought (observability) ----
-  try {
-    let question = '';
-    if (trade.recommendation_id) {
-      const { data: rec } = await supabase
-        .from('trade_recommendations')
-        .select('market_question')
-        .eq('id', trade.recommendation_id)
-        .maybeSingle();
-      question = rec?.market_question ?? '';
-    }
-    await supabase.from('thoughts').insert({
-      scope: 'app',
-      market_condition_id: trade.market_condition_id,
-      content: `Submitted trade on "${question}" — ${trade.side} @ ${trade.price}, size $${trade.size_usd}. CLOB order ${clobOrderId ?? 'unknown'}.`,
-    });
-  } catch (err) {
-    console.error('[trade/submit] thought insert failed', err);
-  }
+  // NOTE: We do NOT write a `thoughts` row for trade submissions. The
+  // thoughts table has no per-user column and its RLS policy exposes all
+  // scope='app' rows to every authenticated client (including the public
+  // anon key in the browser bundle). Per-user trade activity is surfaced
+  // via /api/trade/list + RecentTradesBubble instead.
 
   return Response.json({
     tradeId,
     clobOrderId,
-    status: nextStatus,
+    status: 'submitted',
     submittedAt: now,
   });
 }
