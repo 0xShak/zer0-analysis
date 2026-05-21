@@ -163,21 +163,39 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // ---- soft-rejection detection ----
-  // Polymarket SDK's postOrder resolves (does NOT throw) with
-  // { success: false, errorMsg } when the API rejects an order — bad
-  // signature, insufficient balance, missing CTF allowance, etc. Without
-  // this check we'd record a phantom 'submitted' with clob_order_id=null.
+  // ---- rejection detection ----
+  // Polymarket SDK's postOrder resolves (does NOT throw) with one of:
+  //   { success: true,  orderID, ... }                  on accept
+  //   { success: false, errorMsg }                       on documented soft reject
+  //   { error: '<msg>', status: 4xx }                    on HTTP error — the
+  //     SDK's http-helpers/index.js#errorHandling rewraps axios 4xx
+  //     responses into this shape, hiding them from a `success: false` check
+  //   { error: '<axios.message>' }                       on network failure
+  //
+  // Without the `error`-field branch, "not enough balance" / "not enough
+  // allowance" / "invalid signature" all silently pass as successes with
+  // null orderID, and we mis-report them as cancelled-no-fill.
   const resultObj =
     typeof clobResult === 'object' && clobResult !== null
       ? (clobResult as Record<string, unknown>)
       : {};
-  if (resultObj.success === false) {
+  const httpErrorMsg =
+    typeof resultObj.error === 'string' && resultObj.error
+      ? resultObj.error
+      : null;
+  const isSoftReject = resultObj.success === false;
+  if (httpErrorMsg || isSoftReject) {
     const errorMsg =
-      typeof resultObj.errorMsg === 'string' && resultObj.errorMsg
-        ? resultObj.errorMsg
-        : 'CLOB rejected order';
-    console.error('[trade/submit] CLOB soft-rejection', { tradeId, errorMsg });
+      (typeof resultObj.errorMsg === 'string' && resultObj.errorMsg) ||
+      httpErrorMsg ||
+      'CLOB rejected order';
+    const httpStatus =
+      typeof resultObj.status === 'number' ? resultObj.status : null;
+    console.error('[trade/submit] CLOB rejection', {
+      tradeId,
+      errorMsg,
+      httpStatus,
+    });
     await supabase
       .from('trades')
       .update({
