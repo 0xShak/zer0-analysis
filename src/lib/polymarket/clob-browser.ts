@@ -1,6 +1,6 @@
-// Browser-side Polymarket CLOB client.
+// Browser-side Polymarket CLOB V2 client.
 //
-// Why this exists: Polymarket geoblocks 33 countries on `POST /order`,
+// Why this exists: Polymarket geoblocks ~33 countries on `POST /order`,
 // including the US (where Vercel's Hobby plan pins our Node functions to
 // `iad1`). Doing the submit from the user's own browser sidesteps the block
 // since Polymarket sees the user's residential IP instead of our function's.
@@ -17,7 +17,7 @@ import {
   OrderType,
   type ApiKeyCreds,
   type SignedOrder,
-} from '@polymarket/clob-client';
+} from '@polymarket/clob-client-v2';
 import { providers } from 'ethers';
 
 const HOST = 'https://clob.polymarket.com';
@@ -74,7 +74,7 @@ export function clearCachedCreds(address?: string): void {
   }
 }
 
-// Builds a Polymarket ClobClient bound to the connected wallet's signer.
+// Builds a Polymarket V2 ClobClient bound to the connected wallet's signer.
 // On first call per EOA, prompts the user to sign Polymarket's API-key
 // derivation challenge (one extra MetaMask popup). Subsequent calls reuse
 // the cached credentials.
@@ -96,28 +96,28 @@ export async function getOrCreatePolymarketClient(
 
   let creds = loadCachedCreds(address);
   if (!creds) {
-    // The SDK's `_signer` accepts ethers v5 Signers via duck-typed
-    // `_signTypedData`. The any-cast keeps TS happy across the SDK's
-    // viem/ethers union signer type.
-    const bootstrap = new ClobClient(
-      HOST,
-      CHAIN_ID,
+    const bootstrap = new ClobClient({
+      host: HOST,
+      chain: CHAIN_ID,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      signer as any,
-    );
+      signer: signer as any,
+    });
     creds = await bootstrap.createOrDeriveApiKey();
     saveCachedCreds(address, creds);
   }
 
-  return new ClobClient(
-    HOST,
-    CHAIN_ID,
+  return new ClobClient({
+    host: HOST,
+    chain: CHAIN_ID,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    signer as any,
+    signer: signer as any,
     creds,
-  );
+  });
 }
 
+// Submits a V2 signed order as FAK (fill-and-kill). The SDK's `isV2Order`
+// route picks `orderToJsonV2` automatically once it sees timestamp + metadata
+// + builder on the input — our SignedOrderShape ensures all three are set.
 export async function submitOrderFromBrowser(
   client: ClobClient,
   signedOrder: SignedOrder,

@@ -1,0 +1,465 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>zer0 · in-app trade execution — handoff v1</title>
+<style>
+  :root {
+    --bg: #0b0d10;
+    --fg: #e6e8eb;
+    --muted: #8a9099;
+    --accent: #5eead4;
+    --accent-dim: rgba(94, 234, 212, 0.18);
+    --warn: #fbbf24;
+    --warn-dim: rgba(251, 191, 36, 0.15);
+    --rose: #fb7185;
+    --rose-dim: rgba(251, 113, 133, 0.15);
+    --rule: rgba(255,255,255,0.08);
+    --card: rgba(255,255,255,0.02);
+    --code-bg: rgba(255,255,255,0.04);
+  }
+  html { background: var(--bg); }
+  body {
+    margin: 0;
+    padding: 48px 16px 96px;
+    font: 15px/1.65 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    color: var(--fg);
+    max-width: 920px;
+    margin-inline: auto;
+  }
+  h1, h2, h3, h4 { font-weight: 600; letter-spacing: -0.01em; }
+  h1 { font-size: 30px; margin: 0 0 6px; }
+  h2 { font-size: 21px; margin: 38px 0 12px; border-top: 1px solid var(--rule); padding-top: 28px; }
+  h3 { font-size: 17px; margin: 26px 0 10px; }
+  h4 { font-size: 13px; margin: 20px 0 6px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+  p { margin: 0 0 14px; color: var(--fg); }
+  a { color: var(--accent); }
+  code, pre {
+    font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    background: var(--code-bg);
+    border-radius: 4px;
+  }
+  code { padding: 1px 5px; }
+  pre {
+    padding: 12px 14px;
+    overflow-x: auto;
+    border: 1px solid var(--rule);
+    background: var(--code-bg);
+    border-radius: 8px;
+  }
+  ul, ol { padding-left: 22px; margin: 0 0 14px; }
+  li { margin: 6px 0; }
+  .meta { color: var(--muted); font-size: 13px; }
+  .tag {
+    display: inline-block;
+    font: 11px/1 ui-monospace, monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    padding: 4px 8px;
+    border-radius: 999px;
+    background: var(--accent-dim);
+    color: var(--accent);
+    margin-right: 6px;
+  }
+  .tag.warn { background: var(--warn-dim); color: var(--warn); }
+  .tag.rose { background: var(--rose-dim); color: var(--rose); }
+  .card {
+    border: 1px solid var(--rule);
+    background: var(--card);
+    padding: 16px 18px;
+    border-radius: 10px;
+    margin: 14px 0;
+  }
+  .card.warn { border-color: rgba(251,191,36,0.4); background: var(--warn-dim); }
+  .card.rose { border-color: rgba(251,113,133,0.4); background: var(--rose-dim); }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+    margin: 12px 0;
+  }
+  th, td {
+    border-bottom: 1px solid var(--rule);
+    padding: 8px 10px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { font-weight: 600; color: var(--muted); }
+  blockquote {
+    border-left: 2px solid var(--accent);
+    padding: 6px 14px;
+    margin: 14px 0;
+    color: var(--fg);
+    background: var(--code-bg);
+    border-radius: 0 6px 6px 0;
+  }
+  hr { border: none; border-top: 1px solid var(--rule); margin: 32px 0; }
+  .timeline { border-left: 2px solid var(--rule); margin-left: 8px; padding-left: 18px; }
+  .timeline-item { margin: 16px 0; }
+  .timeline-item h4 { margin-top: 0; color: var(--accent); }
+</style>
+</head>
+<body>
+
+<header>
+  <p class="meta">zer0 internal · engineering handoff · last updated 2026-05-21</p>
+  <h1>In-app trade execution — handoff v1</h1>
+  <p>
+    <span class="tag rose">CURRENT STATUS: BROKEN</span>
+    <span class="tag warn">ERROR: order_version_missmatch</span>
+    <span class="tag">SCOPE: read this whole doc before touching code</span>
+  </p>
+
+  <div class="card rose">
+    <h4>One-line summary</h4>
+    <p>Trades on <code>app.atzer0.xyz/app</code> currently fail with <code>submit failed: clob_rejected: order_version_missmatch</code>. The whole pipeline — wallet connect, chain switch, allowance preflight + approval, EIP-712 typed-data construction (server), signature (browser), HMAC API-key derivation (browser), order POST (browser), getOrder polling (browser), outcome notify (server) — all of it works <em>except</em> Polymarket refuses to accept the signed order because the EIP-712 domain we're signing doesn't match the version their Exchange contract is verifying against.</p>
+    <p>I'm passing this to you instead of trying another fix because we've worked this codebase hard today and my context is rotting. You're going in fresh; you'll spot the version drift faster than I will.</p>
+  </div>
+</header>
+
+<h2>0. Read this first</h2>
+
+<div class="card warn">
+  <h4>Don't undo anything in §3 without reading why</h4>
+  <p>This codebase went through a long debug arc. Every piece in §3 ("what we built") is load-bearing and fixes a specific previous failure mode. The current bug is downstream of all of it. Treat the existing architecture as ground truth and dig into <em>why Polymarket calls our signed order "version mismatched"</em> rather than reverting things.</p>
+  <p>In particular: <strong>do not</strong> revert the client-side submit to a server-side submit (you'll hit the geoblock from §3.f), <strong>do not</strong> remove the allowance preflight (first-time users will get silent rejections), <strong>do not</strong> change OrderType.FAK back to GTC (we'd lose instant-fill semantics and create phantom resting orders).</p>
+</div>
+
+<h2>1. Where the code lives now (post-everything)</h2>
+
+<p>The trade pipeline currently consists of these files. Read them top-to-bottom in this order before debugging:</p>
+
+<table>
+<thead><tr><th>File</th><th>What it does</th><th>Why it matters for this bug</th></tr></thead>
+<tbody>
+<tr>
+  <td><code>src/lib/polymarket/clob.ts</code></td>
+  <td>Server-side ClobClient setup. <code>buildTypedData()</code> (lines 133-181) constructs the EIP-712 payload using <code>buildOrderCreationArgs</code> + <code>ExchangeOrderBuilder.buildOrderTypedData</code> from the SDK. <code>getBookContext()</code> reads order-book / min size.</td>
+  <td><strong>Prime suspect.</strong> If the SDK's EIP-712 domain (name/version/chainId/verifyingContract) drifted from what Polymarket's deployed Exchange expects, the signature is computed against the wrong domain hash and will fail verification.</td>
+</tr>
+<tr>
+  <td><code>src/lib/polymarket/contracts.ts</code></td>
+  <td>Hardcoded Polymarket addresses: CTF Exchange, NegRisk Exchange, USDC.e, Conditional Tokens. Sourced from <code>@polymarket/clob-client/dist/config.js:9-15</code>.</td>
+  <td>Check if these addresses still match what Polymarket's own UI uses. Also: which exchange is selected via <code>exchangeForMarket(negRisk)</code> based on the recommendation's <code>neg_risk</code> field.</td>
+</tr>
+<tr>
+  <td><code>src/app/api/trade/prepare/route.ts</code></td>
+  <td>Receives a recommendation ID + user address + size, fetches market meta, gets cross-the-spread book price, gates min-order-size, builds typed-data, inserts a <code>trades</code> row with status='prepared', returns <code>{ tradeId, typedData, expiresAt, market, execution }</code>.</td>
+  <td>This is where typed-data is constructed. If the SDK's order-builder is generating a bad <code>signatureType</code>, <code>salt</code>, <code>expiration</code>, or domain field — this is where you'll see it.</td>
+</tr>
+<tr>
+  <td><code>src/lib/polymarket/clob-browser.ts</code></td>
+  <td>Browser ClobClient. <code>getOrCreatePolymarketClient</code> derives + caches per-EOA HMAC creds in localStorage. <code>submitOrderFromBrowser</code> posts FAK. <code>pollOrderFromBrowser</code> polls <code>getOrder</code>.</td>
+  <td>Where the POST actually happens. The "order_version_missmatch" error message arrives in the response object from <code>client.postOrder</code> here.</td>
+</tr>
+<tr>
+  <td><code>src/components/TradeCard.tsx</code></td>
+  <td>Full client-side flow. Chain-switch → allowance preflight → optional approve tx → server prepare → <code>eth_signTypedData_v4</code> → browser ClobClient init → submit → poll → notify.</td>
+  <td>The error you're seeing is rendered here (search for <code>setError</code> / <code>setCancelReason</code>). The actual Polymarket response string passes through unchanged from the notify body.</td>
+</tr>
+<tr>
+  <td><code>src/app/api/trade/notify/route.ts</code></td>
+  <td>Server endpoint the browser calls AFTER posting to Polymarket. Records outcome (filled / cancelled / rejected) into the <code>trades</code> table.</td>
+  <td>Logs the reason. Look at <code>console.log('[trade/notify] rejected', ...)</code> in Vercel logs to see what Polymarket said. Also see <code>trades.failure_reason</code> in Supabase.</td>
+</tr>
+<tr>
+  <td><code>src/lib/polymarket/allowance.ts</code></td>
+  <td>Server-side USDC.e allowance + CTF setApprovalForAll readers. Multi-RPC fallback (polygon-rpc.com → BlastAPI → Ankr → dRPC).</td>
+  <td>Not implicated in this bug, but the preflight is load-bearing — without it, first-time users would sign orders that the matcher silently kills.</td>
+</tr>
+<tr>
+  <td><code>src/lib/web3/approve.ts</code></td>
+  <td>Browser-side <code>eth_sendTransaction</code> helpers for USDC.e approve + CTF setApprovalForAll + tx-receipt polling.</td>
+  <td>Not implicated.</td>
+</tr>
+<tr>
+  <td><code>scripts/force-recommendation.ts</code></td>
+  <td>CLI for inserting test recommendations directly into <code>trade_recommendations</code>. Used to inject BUY recs on liquid markets for testing.</td>
+  <td>Use this when reproducing. <code>npm run force-rec -- --side BUY --size 4 --market 0x6114a8a3f9ac214f48a7e20d169f1c7a5c84082cb6f7058ed9fe1137b11fd0e7</code> — that's the US-Iran peace-deal market we've been testing on.</td>
+</tr>
+</tbody>
+</table>
+
+<h2>2. The flow today (end to end)</h2>
+
+<pre><code>┌──────────────────────────────────────────────────────────────────────────┐
+│ USER OPENS app.atzer0.xyz/app, CONNECTS WALLET (MetaMask / Coinbase)     │
+└──────────────────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│ TradeCard mounts → fires GET /api/trade/allowance?address=…              │
+│   (server reads USDC.e.allowance + CTF.isApprovedForAll via viem)        │
+│   → returns { usdc: { allowance }, ctf: { approved }, exchange }         │
+│ Card shows "approve & execute" if allowance=0, "execute" if set          │
+└──────────────────────────────────────────────────────────────────────────┘
+                            │
+                            ▼ (user clicks)
+┌──────────────────────────────────────────────────────────────────────────┐
+│ EXECUTE FLOW:                                                            │
+│  1. Chain-switch to Polygon (0x89) via eth_chainId + switchEthereumChain │
+│  2. Defensive preflight refetch if approval state is null                │
+│  3. If !usdcOk: eth_sendTransaction → USDC.e.approve(spender, MAX)       │
+│     Wait for receipt (poll eth_getTransactionReceipt every 2s)           │
+│  4. POST /api/trade/prepare → server builds EIP-712 typed-data,          │
+│     inserts trades row status='prepared'                                 │
+│  5. eth_signTypedData_v4 → user signs in MetaMask                        │
+│  6. browser ClobClient: getOrCreatePolymarketClient                      │
+│     - If no cached creds for this EOA: one-time API-key derivation       │
+│       (another MetaMask popup, EIP-712 sign on Polymarket's challenge)   │
+│     - Cache in localStorage under key zer0:pm-creds:&lt;eoa-lowercased&gt;     │
+│  7. client.postOrder(signedOrder, FAK) → posts DIRECTLY from browser to  │
+│     Polymarket CLOB. (This is the geoblock bypass — user's residential   │
+│     IP is what gets checked, not Vercel's iad1.)                         │
+│  8. Polymarket responds with one of:                                     │
+│        { success: true, orderID, ... }                  ← accepted       │
+│        { success: false, errorMsg }                     ← soft reject    │
+│        { error: '...', status: 4xx }                    ← HTTP error     │
+│  9. If accepted: pollOrderFromBrowser(client, orderID) for up to 8s      │
+│     watching status transition LIVE → MATCHED / CANCELED / UNMATCHED     │
+│ 10. POST /api/trade/notify with the classified outcome                   │
+│     → notify endpoint updates trades row (filled/cancelled/rejected)     │
+│ 11. UI renders done/cancelled/error state. RecentTradesBubble refreshes  │
+│     via custom event 'zer0:trade-submitted'.                             │
+└──────────────────────────────────────────────────────────────────────────┘
+</code></pre>
+
+<p>The current failure is at <strong>step 8</strong>. Polymarket responds with <code>{ error: 'order_version_missmatch', ... }</code> (note their typo — one 's' is correct in 'mismatch', they spelled it with two), our submit code in TradeCard maps that into the rejected branch via <code>httpErrorMsg</code>, posts notify with <code>kind: 'rejected'</code>, and the UI shows it.</p>
+
+<h2>3. What we built today (in chronological order)</h2>
+
+<p>You'll see commits going back through these — the latest commits do the most-recent work. This is the journey, including dead ends, because some of the "fixes" inform why the architecture is shaped the way it is.</p>
+
+<div class="timeline">
+
+<div class="timeline-item">
+  <h4>a. Wired up wallet signing (TradeCard.tsx)</h4>
+  <p>The frontend was deliberately stubbed: <code>throw new Error('wallet signing wired up on day 5');</code> at TradeCard.tsx:45 (now removed). The backend's <code>/api/trade/prepare</code> + <code>/api/trade/submit</code> were complete but the client never signed or submitted.</p>
+  <p>Added <code>eth_signTypedData_v4</code>, normalised the signed order shape to match <code>SignedOrderShape</code> (zod) in <code>src/lib/trades/validators.ts</code>, and posted to the server submit route.</p>
+</div>
+
+<div class="timeline-item">
+  <h4>b. Chain-switch logic (Polygon 0x89)</h4>
+  <p>MetaMask was on Ethereum mainnet (chainId 1); the EIP-712 domain we signed was for chainId 137. MetaMask refused the sign with RPC error "Provided chainId '137' must match the active chainId '1'". Added <code>wallet_switchEthereumChain</code> call before signing, with <code>wallet_addEthereumChain</code> fallback if the user didn't have Polygon configured (error code 4902).</p>
+</div>
+
+<div class="timeline-item">
+  <h4>c. EIP-1193 error rendering</h4>
+  <p>The error footer initially showed <code>[object Object]</code>. EIP-1193 errors from injected wallets are plain <code>{ code, message }</code> objects, not <code>Error</code> instances — so <code>String(e)</code> in the catch block produced the useless stringification. Fixed by extracting <code>obj.message</code> and special-casing code 4001 ("signature rejected"), 4100 ("wallet not authorized"). Lives in TradeCard's catch block today.</p>
+</div>
+
+<div class="timeline-item">
+  <h4>d. USD vs shares unit bug (subtle and important)</h4>
+  <p>The analyzer's JSON schema returns <code>suggested_size_usd</code>, the DB column is <code>size_usd</code> — but the Polymarket SDK's <code>buildOrderCreationArgs</code> treats <code>size</code> as <strong>shares</strong>, not USD. The original prepare route passed <code>sizeUsd</code> as <code>size</code> directly, meaning a "$100 trade" on a $0.25 market became a 100-share order = $25 of actual exposure.</p>
+  <p>Fixed in <code>src/app/api/trade/prepare/route.ts</code>: <code>const sizeShares = sizeUsd / price;</code>, then pass <code>size: sizeShares</code> to <code>buildTypedData</code>. The <code>trades.size_usd</code> column still stores the user's stated USD intent.</p>
+</div>
+
+<div class="timeline-item">
+  <h4>e. Custom size input + min-order-size guard</h4>
+  <p>TradeCard got a <code>$</code>-prefixed numeric input (range $1-$100, matching the server's <code>PrepareBody</code> cap in <code>src/lib/trades/validators.ts</code>). Also shows the share-equivalent estimate so the user can sanity-check what'll appear in the MetaMask popup.</p>
+  <p>Server-side: <code>getBookContext()</code> in <code>clob.ts</code> returns <code>min_order_size</code> from Polymarket's order book. Prepare gates with <code>sizeShares &lt; minOrderSize → 400 below_min_size</code> + a <code>suggestedMinUsd</code> field. Polymarket markets vary — some need ≥ 5 shares, some ≥ 10, etc.</p>
+</div>
+
+<div class="timeline-item">
+  <h4>f. Geoblock discovery (and the Vercel Hobby plan trap)</h4>
+  <p>Trades initially returned "Trading restricted in your region" from Polymarket. The block is IP-based and applies to the Vercel function's egress, not the user's browser. Polymarket blocks 33 countries on <code>POST /order</code> (US, UK, Germany, France, Italy, Netherlands, Australia, Belgium, Russia, Iran, plus more — see <a href="https://docs.polymarket.com/developers/CLOB/geoblock">docs.polymarket.com/developers/CLOB/geoblock</a>). Vercel Hobby pins Node functions to <code>iad1</code> (Washington DC, US).</p>
+  <p>We tried <code>export const preferredRegion = 'dub1';</code> — Vercel Hobby <strong>silently ignored it</strong>. Confirmed via <code>x-vercel-id</code> header which still showed <code>:iad1:</code> as the function region after deploy. (Pro plan would honor it, but the user chose not to upgrade.)</p>
+  <p><strong>Decision:</strong> move order submission to the browser. The user's IP is what gets checked, not ours. SDK is browser-safe (browser-or-node detection, WebCrypto for HMAC, ~80KB, no Node-only imports). This is the architecture you see today.</p>
+</div>
+
+<div class="timeline-item">
+  <h4>g. Allowance preflight + approve flow</h4>
+  <p>Polymarket needs USDC.e <code>approve(CTF_EXCHANGE, MAX_UINT256)</code> from the user's EOA before any BUY can settle. Without it, the matcher silently kills the order (no <code>transferFrom</code> permission). For SELL orders, additionally needs <code>CTF.setApprovalForAll(CTF_EXCHANGE, true)</code>.</p>
+  <p>Built: server-side allowance reader (<code>src/lib/polymarket/allowance.ts</code> using viem + multi-RPC fallback), <code>/api/trade/allowance</code> route, client-side approve transactions (<code>src/lib/web3/approve.ts</code>), TradeCard integration that prompts approval before signing if needed.</p>
+  <p>Note: the allowance route returns <code>{ unknown: true }</code> (not 503) when all RPCs fail, so the UI shows a soft warning instead of silently bypassing the approval step. There used to be a race condition where TradeCard would let the user click execute before preflight finished; fixed by re-running preflight inline at the start of execute() if approval state is null.</p>
+</div>
+
+<div class="timeline-item">
+  <h4>h. FAK semantics + cross-the-spread pricing</h4>
+  <p>Originally used <code>OrderType.GTC</code> (Good Til Cancel), which meant orders that didn't fill at submit time would rest in Polymarket's book indefinitely — bad UX because the user thinks they "executed" but nothing happens on-chain. Switched to <code>OrderType.FAK</code> (Fill And Kill): match what's possible at the order price, kill the unfilled remainder.</p>
+  <p>For FAK to actually fill, the order price must be at or beyond the opposite side of the book (BUY at the ask, SELL at the bid). Added <code>getBestExecutionPrice(tokenId, side)</code> in <code>clob.ts</code> that reads the order book and returns the cross-the-spread price. Prepare overrides the recommendation's price with this book price.</p>
+  <p>Concretely: model recommends <code>SELL @ $0.25</code>, but current best bid is $0.24 — we sign at $0.24 so the order actually matches against the bids, instead of resting at $0.25 forever.</p>
+</div>
+
+<div class="timeline-item">
+  <h4>i. Post-submit polling (the matcher is async)</h4>
+  <p>Polymarket's <code>postOrder</code> response is just an acknowledgment. Matching + on-chain settlement happen async (1-6 seconds later). The initial response is often <code>{ success: true, orderID: '...' }</code> with no <code>status</code>, no <code>makingAmount</code>, no <code>transactionsHashes</code>. We were misclassifying these as "cancelled" instantly.</p>
+  <p>Added <code>pollOrderResolution</code> (server-side in <code>clob.ts</code>) and <code>pollOrderFromBrowser</code> (browser-side in <code>clob-browser.ts</code>) that poll <code>getOrder(orderID)</code> every 1s for up to 8s. Read the resulting <code>status</code> field (LIVE → MATCHED / CANCELED / UNMATCHED / KILLED) and <code>size_matched</code> to determine the true outcome.</p>
+</div>
+
+<div class="timeline-item">
+  <h4>j. SDK error-response shape gotcha</h4>
+  <p>Polymarket SDK's <code>http-helpers/index.js#errorHandling</code> rewraps axios 4xx errors into <code>{ error: '...', status: 4xx }</code>, NOT the documented <code>{ success: false, errorMsg }</code> shape. Our soft-rejection check was only catching <code>success === false</code>, so HTTP-level errors fell through to the success path, leading to phantom-cancelled rows with empty status data.</p>
+  <p>Fixed in <code>src/components/TradeCard.tsx</code> by also checking for the <code>error</code> field: <code>const httpErrorMsg = typeof resultObj.error === 'string' ? resultObj.error : null; if (httpErrorMsg || isSoftReject) { … }</code>. This is what finally surfaced the geoblock error string verbatim (and is now surfacing <code>order_version_missmatch</code> the same way).</p>
+</div>
+
+<div class="timeline-item">
+  <h4>k. Privacy fix (RecentTradesBubble)</h4>
+  <p>Submit used to insert into <code>thoughts</code> with <code>scope='app'</code>, which is globally visible via RLS (<code>thoughts_read_app</code> policy in <code>supabase/migrations/0001_initial.sql:177-178</code>). Every user could see every other user's trade activity in the ThoughtsBubble. Removed the thoughts insert.</p>
+  <p>Built <code>src/components/app/RecentTradesBubble.tsx</code> reading from <code>/api/trade/list?address=…</code> which filters by <code>user_address</code>. Per-user activity, no cross-user leak.</p>
+</div>
+
+<div class="timeline-item">
+  <h4>l. Client-side submission (the big refactor)</h4>
+  <p>Created <code>src/lib/polymarket/clob-browser.ts</code> with:</p>
+  <ul>
+    <li><code>getOrCreatePolymarketClient(ethereum, address)</code> — builds ethers v5 Web3Provider over <code>window.ethereum</code>, derives ClobClient. One-time per EOA, calls <code>createOrDeriveApiKey()</code> (one MetaMask EIP-712 popup), caches HMAC creds in <code>localStorage['zer0:pm-creds:&lt;eoa-lowercased&gt;']</code>.</li>
+    <li><code>submitOrderFromBrowser(client, signedOrder)</code> — calls <code>client.postOrder(signedOrder, OrderType.FAK)</code> from the user's browser.</li>
+    <li><code>pollOrderFromBrowser(client, orderID)</code> — same polling logic as the server-side version.</li>
+  </ul>
+  <p>Replaced the <code>/api/trade/submit</code> server route with <code>/api/trade/notify</code> — pure DB write, no Polymarket calls. The deleted <code>/api/trade/submit</code> route is gone from <code>src/app/api/trade/</code> entirely.</p>
+</div>
+
+</div>
+
+<h2>4. The current bug — order_version_missmatch</h2>
+
+<div class="card rose">
+  <h4>What we see</h4>
+  <p>After the user signs an order, the browser ClobClient posts to Polymarket and gets back something like:</p>
+  <pre><code>{ error: 'order_version_missmatch', status: 4xx }</code></pre>
+  <p>or possibly</p>
+  <pre><code>{ success: false, errorMsg: 'order_version_missmatch' }</code></pre>
+  <p>(I'm not 100% sure which shape — the Vercel notify logs will tell you. Search for <code>[trade/notify] rejected</code> in Vercel logs and the <code>reason</code> field will have the exact response Polymarket gave us.)</p>
+</div>
+
+<h3>What this error <em>means</em></h3>
+
+<p>Polymarket's CTF Exchange contract verifies the EIP-712 signature against a domain separator built from <code>{ name, version, chainId, verifyingContract }</code>. If any of those four fields drift between what the SDK encodes when building the typed-data and what the contract expects when verifying, the recovered signer doesn't match the order's <code>signer</code> field and the contract reverts. Polymarket's CLOB API does a pre-flight version check before forwarding to the chain — that pre-flight is what's emitting <code>order_version_missmatch</code>.</p>
+
+<p>The "version" field is the most likely drift. The "name" and "verifyingContract" are pretty stable; chainId is locked to 137. But <code>version</code> can be bumped when Polymarket redeploys / upgrades the Exchange contract logic, and an older SDK won't know about the new version string.</p>
+
+<h3>Where the suspect domain is constructed</h3>
+
+<p>In <code>src/lib/polymarket/clob.ts:154-181</code>, <code>buildTypedData</code> instantiates an <code>ExchangeOrderBuilder</code>:</p>
+
+<pre><code>const builder = new ExchangeOrderBuilder(
+  exchangeAddress,  // CTF_EXCHANGE or NEG_RISK_CTF_EXCHANGE based on negRisk
+  CHAIN_ID,         // 137
+  getTypedDataStubSigner() as any,
+);
+…
+return builder.buildOrderTypedData(order);</code></pre>
+
+<p>The <code>ExchangeOrderBuilder</code> lives in <code>node_modules/@polymarket/clob-client/dist/order-utils/exchange.order.builder.js</code>. Read it. It hardcodes the EIP-712 domain — including the <code>version</code> string. Compare what it hardcodes to what's currently deployed on Polygon at:</p>
+
+<ul>
+  <li>CTF Exchange: <code>0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E</code></li>
+  <li>NegRisk Exchange: <code>0xC5d563A36AE78145C45a50134d48A1215220f80a</code></li>
+</ul>
+
+<p>Look at the contract's <code>eip712Domain()</code> view function (or <code>DOMAIN_SEPARATOR()</code>) on Polygonscan. That's the ground truth. Whatever the SDK encodes must match exactly.</p>
+
+<h2>5. Most likely root causes (ranked)</h2>
+
+<ol>
+  <li>
+    <strong>SDK version drift.</strong> We're on <code>@polymarket/clob-client@5.8.1</code> (see <code>package.json</code>). Polymarket has published newer versions since. If they bumped the Exchange contract's EIP-712 version string in a redeploy and updated the SDK accordingly, our 5.8.1 still signs the old version. <strong>First thing to check.</strong>
+    <p class="meta">Verify: <code>npm view @polymarket/clob-client versions --json | tail -20</code>. If there's a 6.x or even 5.9+, that's almost certainly the fix. Bump, test, ship.</p>
+  </li>
+  <li>
+    <strong>Wrong exchange contract selection.</strong> Our <code>exchangeForMarket(negRisk)</code> picks between CTF Exchange and NegRisk Exchange based on the recommendation's <code>neg_risk</code> field, which comes from <code>market.negRisk</code> via Polymarket's Gamma API. If the Gamma API's <code>negRisk</code> flag is wrong (stale or absent for some markets), we'd sign against the wrong exchange's domain. Polymarket would then complain because the signature claims to be for the wrong contract.
+    <p class="meta">Verify: log the <code>negRisk</code> value used in prepare; cross-check against polymarket.com's UI for the same market. The US-Iran market we've been testing has <code>negRisk: false</code> (per our force-rec output) — confirm that's still true.</p>
+  </li>
+  <li>
+    <strong>Different EIP-712 version field per exchange variant.</strong> Even if SDK and contract addresses match, the CTF Exchange and NegRisk Exchange might have different EIP-712 version strings deployed. If <code>ExchangeOrderBuilder</code> uses a single hardcoded version for both, one of them would mismatch. Less likely than #1 but possible.
+  </li>
+  <li>
+    <strong>Order field tampering.</strong> The order struct we sign (salt, nonce, expiration, feeRateBps, signatureType, etc.) must hash to the same struct hash the contract expects. If we're sending integer types where the contract expects strings or vice-versa, the hash differs. <code>buildTypedData</code> already uses the SDK's helper to construct args, so this is unlikely to be wrong — but worth eyeballing the <code>order</code> object in <code>buildTypedData</code> after construction.
+  </li>
+  <li>
+    <strong>Signature payload corruption in the browser path.</strong> The browser does <code>const signedOrder = { ...typedData.message, signature };</code> then passes to <code>client.postOrder</code>. If the SDK's <code>orderToJson</code> serializer transforms field types differently than how we re-stringify them, the on-the-wire JSON might not match what was hashed. Long shot, but inspectable by logging the exact request body that <code>client.postOrder</code> sends.
+  </li>
+</ol>
+
+<h2>6. Concrete next steps</h2>
+
+<ol>
+  <li>
+    <strong>Read the Vercel logs first.</strong> Find a recent <code>[trade/notify] rejected</code> log line. Get the exact <code>reason</code> string. Confirm it's <code>order_version_missmatch</code> verbatim and not a related sibling like <code>order_invalid_signature</code> or <code>order_signer_mismatch</code>. The exact string is the search key.
+  </li>
+  <li>
+    <strong>Check SDK versions.</strong> <code>npm view @polymarket/clob-client versions --json</code>. If we're behind, bump <code>package.json</code>, <code>pnpm install</code>, and re-test. Most likely fix in one line.
+  </li>
+  <li>
+    <strong>If on latest SDK and still mismatched:</strong> read <code>node_modules/@polymarket/clob-client/dist/order-utils/exchange.order.builder.js</code> to find the EIP-712 domain constants. Cross-reference with the CTF Exchange contract's <code>eip712Domain()</code> on Polygonscan. Find the discrepancy.
+  </li>
+  <li>
+    <strong>Reproduce.</strong> Use <code>npm run force-rec -- --side BUY --size 4 --market 0x6114a8a3f9ac214f48a7e20d169f1c7a5c84082cb6f7058ed9fe1137b11fd0e7</code> to inject a fresh recommendation on the US-Iran peace-deal market (decent liquidity, central price around $0.40, neg_risk=false, known-good test target). Connect a wallet with USDC.e + allowance set, attempt the trade, observe the error.
+  </li>
+  <li>
+    <strong>Once fixed:</strong> verify the full happy path on Polygonscan. After a successful execute, look up the user's wallet on <code>polygonscan.com/address/&lt;0x…&gt;</code> — there should be a USDC.e <code>Transfer</code> from the user to the Exchange and a CTF token credit. That's the demo proof point.
+  </li>
+</ol>
+
+<h2>7. Reproduction setup</h2>
+
+<h4>Required env vars (Vercel + .env.local)</h4>
+<ul>
+  <li><code>NEXT_PUBLIC_SUPABASE_URL</code> + <code>SUPABASE_SERVICE_KEY</code> — Supabase admin access.</li>
+  <li><code>RELAY_PRIVATE_KEY</code> — used only by the server-side ClobClient for <code>getMarketMeta</code> + <code>getBookContext</code> reads via API key. NOT used for trade submission anymore.</li>
+  <li><code>OPENAI_API_KEY</code>, <code>GROQ_API_KEY</code>, <code>INNGEST_*</code> — not relevant to this bug.</li>
+</ul>
+
+<h4>Required user setup</h4>
+<ul>
+  <li>An EVM wallet (MetaMask, Coinbase Wallet, etc.) on Polygon.</li>
+  <li>USDC.e balance: <strong>not native USDC</strong>. Polymarket uses the bridged variant at <code>0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174</code>, not Circle's native USDC at <code>0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359</code>. The user can swap via QuickSwap or Polygon Portal.</li>
+  <li>A small POL balance for gas (any user with USDC.e on Polygon has this).</li>
+  <li>The user does NOT need to go through polymarket.com's "Enable Trading" wizard — that wizard is for the POLY_GNOSIS_SAFE proxy flow (signatureType=2). We use signatureType=0 (EOA direct).</li>
+</ul>
+
+<h4>Reproducing the error</h4>
+<ol>
+  <li><code>npm run force-rec -- --side BUY --size 4 --market 0x6114a8a3f9ac214f48a7e20d169f1c7a5c84082cb6f7058ed9fe1137b11fd0e7</code></li>
+  <li>Open <code>app.atzer0.xyz/app</code> (or local dev with <code>npm run dev</code>). The new card appears in OPEN TRADES.</li>
+  <li>Click execute. Click through any required popups: chain-switch, USDC approve (if first-time wallet), Polymarket API key derivation (if first-time wallet on this app), order typed-data sign.</li>
+  <li>Wait 1-8s for poll resolution.</li>
+  <li>Card shows: <code>submit failed: clob_rejected: order_version_missmatch</code> in red.</li>
+</ol>
+
+<h2>8. Things that work today (don't break these)</h2>
+
+<ul>
+  <li>Wallet connect via injected EIP-1193 provider (MetaMask, Coinbase Wallet).</li>
+  <li>Chain auto-switch + add-chain fallback.</li>
+  <li>USDC.e allowance read (multi-RPC fallback, never returns 503 anymore, returns <code>{ unknown: true }</code> if all RPCs fail).</li>
+  <li>USDC.e approve flow with tx receipt polling.</li>
+  <li>Server-side EIP-712 typed-data construction (returns valid-looking payload — the issue is the version inside it).</li>
+  <li>Client-side typed-data signing via <code>eth_signTypedData_v4</code>.</li>
+  <li>Browser ClobClient API key derivation (one-time per EOA, cached in localStorage).</li>
+  <li>Polymarket order book reads via Gamma + CLOB endpoints (these aren't geoblocked, work from anywhere).</li>
+  <li>brain-tick brain that generates recommendations every 30 minutes.</li>
+  <li>RecentTradesBubble per-user activity feed.</li>
+  <li>force-recommendation CLI for testing.</li>
+</ul>
+
+<h2>9. Things in flight / future work</h2>
+
+<ul>
+  <li><strong>Telegram conversational trading (v2)</strong> — design doc lives at <code>zer0-telegramv2.html</code> in this same directory. Builds on the in-app flow once it's working. WalletConnect v2 from the bot, intent parsing via Groq, signature via mobile wallet, posting via either client or a non-blocked relay.</li>
+  <li><strong>POLY_GNOSIS_SAFE support (signatureType=2)</strong> — Polymarket's proxy-wallet flow. We're EOA-only. Adding proxy support would let users who already have a Polymarket proxy wallet trade without first moving USDC.e to their EOA. Out of scope for the current bug.</li>
+  <li><strong>Fills-poller after notify timeout</strong> — when our 8s browser poll times out without resolution, we record cancelled. In theory the order could still settle moments later. A background reconciler could update the trade status from polled <code>getOrder</code> outcomes. Low priority.</li>
+  <li><strong>Multi-region failover for allowance preflight RPC</strong> — already has fallback list, but no caching layer. If a future surge causes all public RPCs to rate-limit, the preflight could brown out. Add Cloudflare R2 or upstream caching if it becomes a problem.</li>
+</ul>
+
+<h2>10. Reference doc index</h2>
+
+<ul>
+  <li><code>zer0.md</code> — original architecture / north star doc. Skim sections on Polymarket and trading.</li>
+  <li><code>zer0-telegramv2.html</code> — Telegram bot design (next feature).</li>
+  <li><code>claude-q.md</code> — three Q&amp;A notes the previous engineer (me) left for the Telegram v2 author. Tangentially useful.</li>
+  <li><code>prompt1.md</code>, <code>zer0-persona.md</code> — branding / persona prompts. Not relevant to this bug.</li>
+  <li><code>scripts/force-recommendation.ts</code> — reproduction tool.</li>
+  <li><code>supabase/migrations/0006_trades.sql</code> — trades table schema. <code>status</code> enum lists what values are valid (<code>pending</code>, <code>prepared</code>, <code>submitted</code>, <code>accepted</code>, <code>rejected</code>, <code>filled</code>, <code>cancelled</code>, <code>failed</code>).</li>
+  <li><a href="https://docs.polymarket.com/developers/CLOB/orders" target="_blank">Polymarket CLOB orders docs</a></li>
+  <li><a href="https://docs.polymarket.com/developers/CLOB/geoblock" target="_blank">Polymarket geoblock docs</a></li>
+</ul>
+
+<hr />
+
+<p class="meta">If you read all 10 sections you have the full picture. If you're skimming: §0, §4, §5, §6. If you're debugging right now: §6 step 1 (Vercel logs), then §6 step 2 (SDK version). Good luck.</p>
+
+</body>
+</html>

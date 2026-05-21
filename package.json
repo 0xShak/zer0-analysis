@@ -10,7 +10,7 @@
     "force-rec": "tsx --env-file=.env.local scripts/force-recommendation.ts"
   },
   "dependencies": {
-    "@polymarket/clob-client": "^5.8.1",
+    "@polymarket/clob-client-v2": "^1.0.6",
     "@supabase/ssr": "^0.10.3",
     "@supabase/supabase-js": "^2.106.0",
     "@types/ws": "^8.18.1",

@@ -178,17 +178,15 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // ---- build typed data ----
-  let typedData;
+  // ---- build typed data + wire-body order ----
+  let prepared;
   try {
-    typedData = await buildTypedData({
+    prepared = await buildTypedData({
       tokenId: rec.token_id,
       price,
       size: sizeShares,
       side: rec.side,
       maker: userAddress,
-      taker: '0x0000000000000000000000000000000000000000',
-      feeRateBps: 0,
       signatureType,
       tickSize,
       negRisk,
@@ -199,6 +197,7 @@ export async function POST(req: NextRequest) {
     console.error('[trade/prepare] buildTypedData failed', message, stack);
     return Response.json({ error: 'clob_unavailable', detail: message }, { status: 500 });
   }
+  const { typedData, order } = prepared;
 
   // ---- insert trades row (status='prepared', payload sans signature) ----
   const { data: inserted, error: insertErr } = await supabase
@@ -227,6 +226,7 @@ export async function POST(req: NextRequest) {
   return Response.json({
     tradeId: inserted.id,
     typedData,
+    order,
     expiresAt: rec.expires_at,
     market: {
       question,

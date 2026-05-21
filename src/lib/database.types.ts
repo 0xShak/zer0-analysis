@@ -496,6 +496,114 @@ export type Database = {
         };
         Relationships: [];
       };
+      tg_wc_sessions: {
+        Row: {
+          telegram_user_id: number;
+          session_topic: string;
+          eoa_address: string;
+          funder_address: string;
+          signature_type: number;
+          wallet_type: 'eoa' | 'proxy' | 'safe' | 'deposit_wallet';
+          expires_at: string;
+          created_at: string;
+          last_used_at: string;
+        };
+        Insert: {
+          telegram_user_id: number;
+          session_topic: string;
+          eoa_address: string;
+          funder_address: string;
+          signature_type: number;
+          wallet_type: 'eoa' | 'proxy' | 'safe' | 'deposit_wallet';
+          expires_at: string;
+          created_at?: string;
+          last_used_at?: string;
+        };
+        Update: {
+          telegram_user_id?: number;
+          session_topic?: string;
+          eoa_address?: string;
+          funder_address?: string;
+          signature_type?: number;
+          wallet_type?: 'eoa' | 'proxy' | 'safe' | 'deposit_wallet';
+          expires_at?: string;
+          created_at?: string;
+          last_used_at?: string;
+        };
+        Relationships: [];
+      };
+      tg_pending_trades: {
+        Row: {
+          id: string;
+          telegram_user_id: number;
+          chat_id: number;
+          message_id: number | null;
+          state:
+            | 'INTENT_PARSED'
+            | 'AWAITING_USER_CONFIRM'
+            | 'AWAITING_WALLET_SIG'
+            | 'SUBMITTED'
+            | 'DONE'
+            | 'CANCELLED'
+            | 'EXPIRED';
+          trade_id: string | null;
+          intent_json: Json;
+          typed_data: Json | null;
+          wallet_meta: Json | null;
+          expires_at: string;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          telegram_user_id: number;
+          chat_id: number;
+          message_id?: number | null;
+          state:
+            | 'INTENT_PARSED'
+            | 'AWAITING_USER_CONFIRM'
+            | 'AWAITING_WALLET_SIG'
+            | 'SUBMITTED'
+            | 'DONE'
+            | 'CANCELLED'
+            | 'EXPIRED';
+          trade_id?: string | null;
+          intent_json: Json;
+          typed_data?: Json | null;
+          wallet_meta?: Json | null;
+          expires_at?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          telegram_user_id?: number;
+          chat_id?: number;
+          message_id?: number | null;
+          state?:
+            | 'INTENT_PARSED'
+            | 'AWAITING_USER_CONFIRM'
+            | 'AWAITING_WALLET_SIG'
+            | 'SUBMITTED'
+            | 'DONE'
+            | 'CANCELLED'
+            | 'EXPIRED';
+          trade_id?: string | null;
+          intent_json?: Json;
+          typed_data?: Json | null;
+          wallet_meta?: Json | null;
+          expires_at?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      walletconnect_kv: {
+        Row: { key: string; value: Json; updated_at: string };
+        Insert: { key: string; value: Json; updated_at?: string };
+        Update: { key?: string; value?: Json; updated_at?: string };
+        Relationships: [];
+      };
     };
     Views: Record<string, never>;
     Functions: {
@@ -504,7 +612,16 @@ export type Database = {
         Returns: { fingerprint: string; day: string; count: number };
       };
     };
-    Enums: Record<string, never>;
+    Enums: {
+      tg_trade_state:
+        | 'INTENT_PARSED'
+        | 'AWAITING_USER_CONFIRM'
+        | 'AWAITING_WALLET_SIG'
+        | 'SUBMITTED'
+        | 'DONE'
+        | 'CANCELLED'
+        | 'EXPIRED';
+    };
     CompositeTypes: Record<string, never>;
   };
 };

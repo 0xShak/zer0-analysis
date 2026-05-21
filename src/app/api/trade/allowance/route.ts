@@ -1,10 +1,10 @@
 // GET /api/trade/allowance?address=0x...&recommendationId=<uuid>
 //
-// Preflight read of the user's USDC.e allowance to the Polymarket Exchange
-// (and CTF setApprovalForAll status, used only for SELL). Lets the
-// TradeCard surface a "first-time setup" hint and run the approve tx
-// before signing an order Polymarket would otherwise reject for
-// insufficient allowance.
+// Preflight read of everything the TradeCard needs to decide which first-
+// trade setup steps to drive: pUSD balance + V2 Exchange allowance, USDC.e
+// balance + Onramp allowance (for wrapping), and CTF setApprovalForAll
+// status (used only for SELL). Lets the UI prompt the user through
+// USDC.e → wrap → pUSD approve → sign before touching the order.
 
 import type { NextRequest } from 'next/server';
 import { utils as ethersUtils } from 'ethers';
@@ -13,11 +13,16 @@ import { clientIpFromHeaders } from '@/lib/chat/fingerprint';
 import { rateLimit, rateLimitKey } from '@/lib/trades/rate-limit';
 import {
   AllRpcsFailedError,
-  getCollateralAllowance,
+  getPusdAllowance,
+  getPusdBalance,
+  getUsdceAllowance,
+  getUsdceBalance,
   isCtfApprovedForAll,
 } from '@/lib/polymarket/allowance';
 import {
+  COLLATERAL_ONRAMP,
   CONDITIONAL_TOKENS,
+  PUSD_ADDRESS,
   USDC_E_ADDRESS,
   exchangeForMarket,
 } from '@/lib/polymarket/contracts';
@@ -45,9 +50,8 @@ export async function GET(req: NextRequest) {
   }
 
   // Optional: look up the recommendation's neg_risk flag so we know which
-  // Exchange contract is the spender. Falls back to the regular CTF
-  // Exchange if the recommendation can't be resolved (good enough for the
-  // common case; client can re-fetch with a specific id later).
+  // V2 Exchange contract is the spender. Falls back to the regular V2 CTF
+  // Exchange if the recommendation can't be resolved.
   let negRisk = false;
   const recId = req.nextUrl.searchParams.get('recommendationId');
   if (recId && UUID_RE.test(recId)) {
@@ -60,21 +64,26 @@ export async function GET(req: NextRequest) {
     if (rec) negRisk = Boolean(rec.neg_risk);
   }
 
-  const spender = exchangeForMarket(negRisk) as `0x${string}`;
+  const exchange = exchangeForMarket(negRisk) as `0x${string}`;
+  const onramp = COLLATERAL_ONRAMP as `0x${string}`;
   const owner = address as `0x${string}`;
 
-  let allowance: bigint;
+  let pusdBalance: bigint;
+  let pusdAllowance: bigint;
+  let usdceBalance: bigint;
+  let usdceAllowance: bigint;
   let ctfApproved: boolean;
   try {
-    [allowance, ctfApproved] = await Promise.all([
-      getCollateralAllowance(owner, spender),
-      isCtfApprovedForAll(owner, spender),
+    [pusdBalance, pusdAllowance, usdceBalance, usdceAllowance, ctfApproved] = await Promise.all([
+      getPusdBalance(owner),
+      getPusdAllowance(owner, exchange),
+      getUsdceBalance(owner),
+      getUsdceAllowance(owner, onramp),
+      isCtfApprovedForAll(owner, exchange),
     ]);
   } catch (err) {
     // All fallback RPCs failed. Return 200 with `unknown: true` so the
-    // client can decide whether to surface a soft warning vs hard error;
-    // returning 503 here meant the user got NO approval prompt and the
-    // order silently proceeded without allowance.
+    // client can decide whether to surface a soft warning vs hard error.
     if (err instanceof AllRpcsFailedError) {
       console.warn('[trade/allowance] all RPCs failed', err.attempts);
     } else {
@@ -82,23 +91,31 @@ export async function GET(req: NextRequest) {
     }
     return Response.json({
       unknown: true,
-      usdc: { spender, token: USDC_E_ADDRESS },
-      ctf: { spender, token: CONDITIONAL_TOKENS },
-      exchange: { negRisk },
+      pusd: { spender: exchange, token: PUSD_ADDRESS },
+      usdce: { onramp, token: USDC_E_ADDRESS },
+      ctf: { spender: exchange, token: CONDITIONAL_TOKENS },
+      exchange: { negRisk, address: exchange },
     });
   }
 
   return Response.json({
-    usdc: {
-      allowance: allowance.toString(),
-      spender,
+    pusd: {
+      balance: pusdBalance.toString(),
+      allowance: pusdAllowance.toString(),
+      spender: exchange,
+      token: PUSD_ADDRESS,
+    },
+    usdce: {
+      balance: usdceBalance.toString(),
+      allowance: usdceAllowance.toString(),
+      onramp,
       token: USDC_E_ADDRESS,
     },
     ctf: {
       approved: ctfApproved,
-      spender,
+      spender: exchange,
       token: CONDITIONAL_TOKENS,
     },
-    exchange: { negRisk },
+    exchange: { negRisk, address: exchange },
   });
 }

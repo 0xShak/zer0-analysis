@@ -2,8 +2,10 @@
 
 import { useEffect, useState } from 'react';
 import {
-  sendApproveUsdc,
+  sendApprovePusd,
+  sendApproveUsdcForOnramp,
   sendSetApprovalForAllCtf,
+  sendWrapUsdc,
   waitForReceipt,
 } from '@/lib/web3/approve';
 import {
@@ -12,7 +14,7 @@ import {
   pollOrderFromBrowser,
   submitOrderFromBrowser,
 } from '@/lib/polymarket/clob-browser';
-import type { SignedOrder } from '@polymarket/clob-client';
+import type { SignedOrder } from '@polymarket/clob-client-v2';
 
 type EthereumProvider = {
   request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
@@ -34,19 +36,62 @@ export type TradeRecommendation = {
   rationale: string;
 };
 
-type ApprovalState = {
-  usdcOk: boolean;
-  ctfOk: boolean;
-  spender: string;
+type AllowanceData = {
+  pusd: { balance: bigint; allowance: bigint; spender: string };
+  usdce: { balance: bigint; allowance: bigint; onramp: string };
+  ctf: { approved: boolean; spender: string };
   negRisk: boolean;
   unknown?: boolean;
 };
 
-// Treat any non-zero USDC allowance as "approved" — the in-app flow only
-// ever sets MAX_UINT256, so any positive value means we (or Polymarket's
-// UI in the past) granted access. A single full-token threshold gives some
-// slack against rounding without being so high it ignores partial revokes.
-const USDC_OK_THRESHOLD = BigInt(1000000); // 1 USDC.e (6 decimals) in micro-units
+// Treat any non-zero pUSD allowance covering >= $1 as "approved" — the
+// in-app flow only ever sets MAX_UINT256, so any positive value means we
+// (or Polymarket's UI in the past) already granted access.
+const PUSD_OK_THRESHOLD = BigInt(1_000_000); // $1 in 6-decimal micro-units
+const USDCE_OK_THRESHOLD = BigInt(1_000_000); // same threshold for Onramp side
+
+// Convert a USD float into 6-decimal micro-units, rounding up so we always
+// wrap/approve at least the requested notional. e.g. 4 → 4_000_000n.
+function usdToMicros(usd: number): bigint {
+  if (!Number.isFinite(usd) || usd <= 0) return BigInt(0);
+  return BigInt(Math.ceil(usd * 1_000_000));
+}
+
+function parseBigInt(s: string | undefined | null): bigint {
+  try {
+    return BigInt(s ?? '0');
+  } catch {
+    return BigInt(0);
+  }
+}
+
+function parseAllowanceResponse(body: unknown): AllowanceData | null {
+  if (!body || typeof body !== 'object') return null;
+  const b = body as Record<string, unknown>;
+  const pusdRaw = b.pusd as Record<string, unknown> | undefined;
+  const usdceRaw = b.usdce as Record<string, unknown> | undefined;
+  const ctfRaw = b.ctf as Record<string, unknown> | undefined;
+  const exchangeRaw = b.exchange as Record<string, unknown> | undefined;
+  if (!pusdRaw || !usdceRaw || !ctfRaw) return null;
+  return {
+    pusd: {
+      balance: parseBigInt(pusdRaw.balance as string | undefined),
+      allowance: parseBigInt(pusdRaw.allowance as string | undefined),
+      spender: String(pusdRaw.spender ?? ''),
+    },
+    usdce: {
+      balance: parseBigInt(usdceRaw.balance as string | undefined),
+      allowance: parseBigInt(usdceRaw.allowance as string | undefined),
+      onramp: String(usdceRaw.onramp ?? ''),
+    },
+    ctf: {
+      approved: Boolean(ctfRaw.approved),
+      spender: String(ctfRaw.spender ?? ''),
+    },
+    negRisk: Boolean(exchangeRaw?.negRisk),
+    unknown: Boolean(b.unknown),
+  };
+}
 
 export function TradeCard({
   rec,
@@ -58,7 +103,9 @@ export function TradeCard({
   const [status, setStatus] = useState<
     | 'idle'
     | 'checking-allowance'
-    | 'approving-usdc'
+    | 'approving-usdce-onramp'
+    | 'wrapping'
+    | 'approving-pusd'
     | 'approving-ctf'
     | 'preparing'
     | 'signing'
@@ -71,7 +118,7 @@ export function TradeCard({
   const [error, setError] = useState<string | null>(null);
   const [clobOrderId, setClobOrderId] = useState<string | null>(null);
   const [cancelReason, setCancelReason] = useState<string | null>(null);
-  const [approval, setApproval] = useState<ApprovalState | null>(null);
+  const [allowance, setAllowance] = useState<AllowanceData | null>(null);
   // Size is in USD (server caps at $1-$100 via PrepareBody). The wallet
   // popup will show this converted to share-denominated maker/taker amounts.
   const [sizeUsdInput, setSizeUsdInput] = useState<string>(
@@ -85,22 +132,41 @@ export function TradeCard({
     sizeValid && rec.price > 0 ? sizeUsd / Number(rec.price) : null;
   const inFlight =
     status === 'checking-allowance' ||
-    status === 'approving-usdc' ||
+    status === 'approving-usdce-onramp' ||
+    status === 'wrapping' ||
+    status === 'approving-pusd' ||
     status === 'approving-ctf' ||
     status === 'preparing' ||
     status === 'signing' ||
     status === 'deriving-keys' ||
     status === 'submitting';
-  const needsUsdcApproval = !!approval && !approval.usdcOk;
+
+  // Decide which setup steps are needed for this trade given the current
+  // pUSD/USDC.e/CTF state. BUYs need pUSD as collateral (may require a wrap
+  // from USDC.e); SELLs need CTF setApprovalForAll. Both sides leave a pUSD
+  // allowance on the V2 Exchange so future trades skip the popup.
+  const sizeUsdMicros = usdToMicros(sizeValid ? sizeUsd : 0);
+  const needsWrap =
+    rec.side === 'BUY' && !!allowance && allowance.pusd.balance < sizeUsdMicros;
+  const wrapAmountMicros = needsWrap && allowance
+    ? sizeUsdMicros - allowance.pusd.balance
+    : BigInt(0);
+  const needsUsdceForOnramp =
+    !!allowance && needsWrap && allowance.usdce.allowance < USDCE_OK_THRESHOLD;
+  const insufficientUsdce =
+    !!allowance && needsWrap && allowance.usdce.balance < wrapAmountMicros;
+  const needsPusdApproval =
+    !!allowance && allowance.pusd.allowance < PUSD_OK_THRESHOLD;
   const needsCtfApproval =
-    !!approval && rec.side === 'SELL' && !approval.ctfOk;
-  const setupRequired = needsUsdcApproval || needsCtfApproval;
+    !!allowance && rec.side === 'SELL' && !allowance.ctf.approved;
+  const setupRequired =
+    needsUsdceForOnramp || needsWrap || needsPusdApproval || needsCtfApproval;
 
   // Allowance preflight — fires when wallet connects or the recommendation
-  // changes. The server reads USDC.e.allowance + CTF.isApprovedForAll from
-  // a public Polygon RPC; no signing is required. If anything is missing,
-  // we surface a small "first-time setup" notice; clicking execute will
-  // run the approve tx(s) inline before signing the order.
+  // changes. The server reads pUSD/USDC.e balances + allowances + CTF
+  // approval from a public Polygon RPC; no signing required. If anything is
+  // missing, the user sees a small "first-time setup" notice; clicking
+  // execute will run the approve/wrap tx(s) inline before signing.
   useEffect(() => {
     if (!userAddress) return;
     let cancelled = false;
@@ -112,41 +178,13 @@ export function TradeCard({
         );
         if (cancelled) return;
         if (!res.ok) return;
-        const body = (await res.json()) as {
-          unknown?: boolean;
-          usdc: { allowance?: string; spender: string };
-          ctf: { approved?: boolean; spender: string };
-          exchange: { negRisk: boolean };
-        };
+        const body = (await res.json()) as unknown;
         if (cancelled) return;
-        if (body.unknown) {
-          // All RPCs failed. Default to "approval unknown" — UI will show a
-          // soft notice and the user can still try execute; the worst case
-          // is one extra wallet popup when the order is actually rejected.
-          setApproval({
-            usdcOk: false,
-            ctfOk: false,
-            spender: body.usdc.spender,
-            negRisk: body.exchange.negRisk,
-            unknown: true,
-          });
-          return;
-        }
-        let allowanceBig: bigint;
-        try {
-          allowanceBig = BigInt(body.usdc.allowance ?? '0');
-        } catch {
-          allowanceBig = BigInt(0);
-        }
-        setApproval({
-          usdcOk: allowanceBig >= USDC_OK_THRESHOLD,
-          ctfOk: !!body.ctf.approved,
-          spender: body.usdc.spender,
-          negRisk: body.exchange.negRisk,
-        });
+        const parsed = parseAllowanceResponse(body);
+        if (parsed) setAllowance(parsed);
       } catch {
-        // Allowance is best-effort. If preflight fails the user can still
-        // try execute; submit will surface the real CLOB rejection.
+        // Allowance fetch is best-effort. If preflight fails the user can
+        // still try execute; submit will surface the real CLOB rejection.
       }
     }
     void loadAllowance();
@@ -175,12 +213,8 @@ export function TradeCard({
     try {
       // Defensive preflight — if the user clicked execute before the
       // background allowance fetch settled, do it now synchronously.
-      // Without this, `approval` could be null at this point, causing
-      // `needsUsdcApproval` to evaluate false and silently skipping the
-      // approve step. That's exactly the race that produced Polymarket
-      // submissions on wallets with zero allowance.
-      let currentApproval = approval;
-      if (!currentApproval) {
+      let current = allowance;
+      if (!current) {
         setStatus('checking-allowance');
         try {
           const res = await fetch(
@@ -188,42 +222,18 @@ export function TradeCard({
             { cache: 'no-store' },
           );
           if (res.ok) {
-            const body = (await res.json()) as {
-              unknown?: boolean;
-              usdc: { allowance?: string; spender: string };
-              ctf: { approved?: boolean; spender: string };
-              exchange: { negRisk: boolean };
-            };
-            if (body.unknown) {
-              currentApproval = {
-                usdcOk: false,
-                ctfOk: false,
-                spender: body.usdc.spender,
-                negRisk: body.exchange.negRisk,
-                unknown: true,
-              };
-            } else {
-              let allowanceBig: bigint;
-              try {
-                allowanceBig = BigInt(body.usdc.allowance ?? '0');
-              } catch {
-                allowanceBig = BigInt(0);
-              }
-              currentApproval = {
-                usdcOk: allowanceBig >= USDC_OK_THRESHOLD,
-                ctfOk: !!body.ctf.approved,
-                spender: body.usdc.spender,
-                negRisk: body.exchange.negRisk,
-              };
+            const parsed = parseAllowanceResponse(await res.json());
+            if (parsed) {
+              current = parsed;
+              setAllowance(parsed);
             }
-            setApproval(currentApproval);
           }
         } catch {
-          // Allowance fetch is best-effort; if it blows up we proceed
-          // without preflight data. Polymarket will surface the real
-          // rejection at submit time if allowance is missing.
+          // Best-effort. Polymarket will surface the real rejection at
+          // submit time if approvals are missing.
         }
       }
+
       // Polymarket is on Polygon (chainId 137 / 0x89). The EIP-712 domain we
       // ask the wallet to sign also encodes 137 — if the wallet is on a
       // different chain MetaMask rejects the sign request with -32603.
@@ -260,50 +270,99 @@ export function TradeCard({
         }
       }
 
-      // First-time setup: approve USDC.e (always for any side) and CTF
-      // setApprovalForAll (SELL only). Each is one on-chain tx the user
-      // signs in their wallet. We wait for receipts so a subsequent
-      // signTypedData / postOrder doesn't race ahead of the approval.
-      // We use `currentApproval` (just-fetched if needed) rather than the
-      // possibly-stale closure `approval` to avoid the race condition.
-      if (currentApproval) {
-        const usdcNeeded = !currentApproval.usdcOk;
-        const ctfNeeded =
-          rec.side === 'SELL' && !currentApproval.ctfOk;
-        if (usdcNeeded) {
-          setStatus('approving-usdc');
-          const txHash = await sendApproveUsdc(
+      // ----- V2 first-time setup chain -----
+      // We compute the booleans inline against `current` to avoid the race
+      // condition where the closure value of `allowance` lags behind the
+      // just-refetched preflight.
+      if (current) {
+        const wrapNeeded =
+          rec.side === 'BUY' && current.pusd.balance < sizeUsdMicros;
+        const wrapDelta = wrapNeeded
+          ? sizeUsdMicros - current.pusd.balance
+          : BigInt(0);
+        if (wrapNeeded) {
+          if (current.usdce.balance < wrapDelta) {
+            throw new Error(
+              `insufficient USDC.e: need $${(Number(wrapDelta) / 1_000_000).toFixed(2)}, have $${(Number(current.usdce.balance) / 1_000_000).toFixed(2)}`,
+            );
+          }
+          if (current.usdce.allowance < wrapDelta) {
+            setStatus('approving-usdce-onramp');
+            const txHash = await sendApproveUsdcForOnramp(
+              ethereum,
+              userAddress,
+              current.usdce.onramp,
+            );
+            const receipt = await waitForReceipt(ethereum, txHash);
+            if (receipt.status !== 'success') {
+              throw new Error('USDC.e approve (Onramp) tx reverted');
+            }
+          }
+          setStatus('wrapping');
+          const txHash = await sendWrapUsdc(
             ethereum,
             userAddress,
-            currentApproval.spender,
+            current.usdce.onramp,
+            wrapDelta,
           );
           const receipt = await waitForReceipt(ethereum, txHash);
           if (receipt.status !== 'success') {
-            throw new Error('USDC approve tx reverted');
+            throw new Error('USDC.e → pUSD wrap tx reverted');
           }
         }
-        if (ctfNeeded) {
+
+        if (current.pusd.allowance < PUSD_OK_THRESHOLD) {
+          setStatus('approving-pusd');
+          const txHash = await sendApprovePusd(
+            ethereum,
+            userAddress,
+            current.pusd.spender,
+          );
+          const receipt = await waitForReceipt(ethereum, txHash);
+          if (receipt.status !== 'success') {
+            throw new Error('pUSD approve tx reverted');
+          }
+        }
+
+        if (rec.side === 'SELL' && !current.ctf.approved) {
           setStatus('approving-ctf');
           const txHash = await sendSetApprovalForAllCtf(
             ethereum,
             userAddress,
-            currentApproval.spender,
+            current.ctf.spender,
           );
           const receipt = await waitForReceipt(ethereum, txHash);
           if (receipt.status !== 'success') {
             throw new Error('CTF approve tx reverted');
           }
         }
-        if (usdcNeeded || ctfNeeded) {
-          // Locally mark approvals as done so a retry within this session
-          // skips the on-chain dance. A reload will re-check.
-          setApproval({
-            ...currentApproval,
-            usdcOk: true,
-            ctfOk: rec.side === 'SELL' ? true : currentApproval.ctfOk,
-            unknown: false,
-          });
-        }
+
+        // Locally mark approvals as done so a retry within this session
+        // skips the on-chain dance. A reload will re-check.
+        setAllowance({
+          ...current,
+          pusd: {
+            ...current.pusd,
+            balance: wrapNeeded ? current.pusd.balance + wrapDelta : current.pusd.balance,
+            allowance:
+              current.pusd.allowance < PUSD_OK_THRESHOLD
+                ? BigInt(2) ** BigInt(255)
+                : current.pusd.allowance,
+          },
+          usdce: {
+            ...current.usdce,
+            balance: wrapNeeded ? current.usdce.balance - wrapDelta : current.usdce.balance,
+            allowance:
+              wrapNeeded && current.usdce.allowance < wrapDelta
+                ? BigInt(2) ** BigInt(255)
+                : current.usdce.allowance,
+          },
+          ctf: {
+            ...current.ctf,
+            approved: rec.side === 'SELL' ? true : current.ctf.approved,
+          },
+          unknown: false,
+        });
       }
 
       setStatus('preparing');
@@ -318,7 +377,11 @@ export function TradeCard({
         }),
       });
       const prepBody = (await prep.json().catch(() => null)) as
-        | { tradeId: string; typedData: { message: Record<string, unknown> } }
+        | {
+            tradeId: string;
+            typedData: { message: Record<string, unknown> };
+            order: Record<string, unknown>;
+          }
         | { error: string }
         | null;
       if (!prep.ok || !prepBody || 'error' in prepBody) {
@@ -326,7 +389,7 @@ export function TradeCard({
           prepBody && 'error' in prepBody ? prepBody.error : `status ${prep.status}`;
         throw new Error(`prepare failed: ${reason}`);
       }
-      const { tradeId, typedData } = prepBody;
+      const { tradeId, typedData, order } = prepBody;
 
       setStatus('signing');
       // EIP-712 typed-data sign. MetaMask wants the payload JSON-stringified
@@ -336,15 +399,14 @@ export function TradeCard({
         params: [userAddress, JSON.stringify(typedData)],
       })) as string;
 
-      // typedData.message already contains every Order field the submit
-      // route validates (salt, maker, signer, taker, tokenId, makerAmount,
-      // takerAmount, expiration, nonce, feeRateBps, side, signatureType).
-      // We just append the signature.
-      const signedOrder = { ...typedData.message, signature };
+      // V2 wire body: server-built `order` already has the correct string
+      // side, taker (zero), expiration, timestamp, metadata, builder. Merge
+      // in the signature.
+      const signedOrder = { ...order, signature };
 
-      // Initialize Polymarket browser client. First-time per EOA prompts a
-      // one-off API-key derivation popup (EIP-712); subsequent trades reuse
-      // the cached HMAC creds from localStorage.
+      // Initialize Polymarket V2 browser client. First-time per EOA prompts
+      // a one-off API-key derivation popup (EIP-712); subsequent trades
+      // reuse the cached HMAC creds from localStorage.
       if (!hasCachedCreds(userAddress)) {
         setStatus('deriving-keys');
       }
@@ -358,9 +420,7 @@ export function TradeCard({
 
       // Classify the response. The SDK's http-helpers wraps HTTP 4xx into
       // { error, status }, separate from soft rejections at { success: false }.
-      // Both mean "Polymarket refused the order". Other cases:
-      //   { success: true, orderID, ... }          → accepted, may or may not be matched yet
-      //   anything weird                            → treat as rejected for safety
+      // Both mean "Polymarket refused the order".
       const resultObj =
         typeof clobResult === 'object' && clobResult !== null
           ? (clobResult as Record<string, unknown>)
@@ -406,8 +466,6 @@ export function TradeCard({
       let polledStatus = inlineStatus;
       let polledSizeMatched = '';
       if (!inlineMatched && apiClobOrderId) {
-        // Polymarket's postOrder is an ACK; match/settlement is async.
-        // Poll getOrder until status leaves LIVE (or we time out).
         const resolution = await pollOrderFromBrowser(pmClient, apiClobOrderId);
         if (resolution.kind === 'matched') {
           matched = true;
@@ -458,8 +516,6 @@ export function TradeCard({
         setCancelReason(reason);
         setStatus('cancelled');
       }
-      // Tell RecentTradesBubble (or any other listener) to refresh — the
-      // notify endpoint just updated the trades row.
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent('zer0:trade-submitted'));
       }
@@ -489,6 +545,23 @@ export function TradeCard({
   }
 
   const buy = rec.side === 'BUY';
+
+  // Build the first-time-setup label. The user might need any subset of:
+  // wrap (USDC.e → pUSD), pUSD approve, CTF approve (SELL only).
+  let setupLabel: string | null = null;
+  if (setupRequired && status === 'idle') {
+    const steps: string[] = [];
+    if (insufficientUsdce) {
+      setupLabel = `need $${(Number(sizeUsdMicros) / 1_000_000).toFixed(2)} of USDC.e or pUSD — you have less than that available`;
+    } else {
+      if (needsWrap) steps.push('wrap USDC.e → pUSD');
+      if (needsPusdApproval) steps.push('approve pUSD');
+      if (needsCtfApproval) steps.push('approve share tokens');
+      if (steps.length > 0) {
+        setupLabel = `first-time setup: ${steps.join(' + ')} before signing`;
+      }
+    }
+  }
 
   return (
     <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-3 transition hover:border-white/[0.12] hover:bg-white/[0.04]">
@@ -539,31 +612,25 @@ export function TradeCard({
         </span>
       </div>
 
-      {approval?.unknown && status === 'idle' ? (
+      {allowance?.unknown && status === 'idle' ? (
         <p className="mb-2 rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1.5 text-[10px] leading-snug text-amber-200">
-          couldn&apos;t verify wallet approvals (RPC timed out). proceeding may
-          require an extra wallet popup if the trade needs an approve tx.
+          couldn&apos;t verify wallet balances (RPC timed out). proceeding may
+          require extra wallet popups if the trade needs a wrap or approve.
         </p>
-      ) : setupRequired && status === 'idle' ? (
+      ) : setupLabel ? (
         <p className="mb-2 rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1.5 text-[10px] leading-snug text-amber-200">
-          first-time setup: clicking execute will prompt{' '}
-          {needsUsdcApproval && needsCtfApproval
-            ? 'USDC.e and share approvals'
-            : needsUsdcApproval
-              ? 'a one-time USDC.e approval'
-              : 'a one-time share-token approval'}{' '}
-          before signing the order.
+          {setupLabel}
         </p>
       ) : null}
 
       <button
         onClick={() => void execute()}
-        disabled={inFlight || status === 'done' || !sizeValid}
+        disabled={inFlight || status === 'done' || !sizeValid || insufficientUsdce}
         className="w-full rounded-lg bg-zinc-50 px-3 py-1.5 text-xs font-medium text-black transition hover:bg-white disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-500"
       >
         {status === 'idle'
           ? setupRequired
-            ? 'approve & execute'
+            ? 'set up & execute'
             : 'execute'
           : status === 'error' || status === 'cancelled'
             ? 'try again'

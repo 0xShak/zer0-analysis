@@ -1,20 +1,29 @@
-// Server-side allowance / approval reader for Polymarket trading.
+// Server-side balance / allowance / approval reader for Polymarket V2.
 //
-// USDC.e allowance and ConditionalTokens setApprovalForAll status are read
-// straight from Polygon mainnet via public RPCs. We try several endpoints
-// in order so a single rate-limiting RPC (polygon-rpc.com aggressively
-// throttles serverless IP ranges) doesn't take the preflight down.
+// V2 trades against pUSD (an ERC-20 wrapping USDC.e via the CollateralOnramp).
+// We read four things to drive the UI's first-trade setup:
+//   - pUSD balance + pUSD allowance on the V2 Exchange (the actual trading
+//     prerequisite)
+//   - USDC.e balance + USDC.e allowance on the Onramp (so the UI can drive
+//     the USDC.e → pUSD wrap if the user has USDC.e but no pUSD)
+//   - CTF.isApprovedForAll on the V2 Exchange (only needed for SELLs)
+//
+// Reads go through a multi-RPC fallback so a single rate-limited public RPC
+// doesn't take the preflight down.
 
 import { createPublicClient, http, parseAbi, type PublicClient } from 'viem';
 import { polygon } from 'viem/chains';
 import { env } from '../env';
 import {
+  COLLATERAL_ONRAMP,
   CONDITIONAL_TOKENS,
+  PUSD_ADDRESS,
   USDC_E_ADDRESS,
 } from './contracts';
 
-const USDC_ABI = parseAbi([
+const ERC20_ABI = parseAbi([
   'function allowance(address owner, address spender) view returns (uint256)',
+  'function balanceOf(address owner) view returns (uint256)',
 ]);
 
 const CTF_ABI = parseAbi([
@@ -81,14 +90,53 @@ async function withFallback<T>(
   throw new AllRpcsFailedError(attempts);
 }
 
-export async function getCollateralAllowance(
+export async function getPusdBalance(owner: `0x${string}`): Promise<bigint> {
+  return withFallback(async (client) => {
+    const result = await client.readContract({
+      address: PUSD_ADDRESS,
+      abi: ERC20_ABI,
+      functionName: 'balanceOf',
+      args: [owner],
+    });
+    return result as bigint;
+  });
+}
+
+export async function getPusdAllowance(
+  owner: `0x${string}`,
+  spender: `0x${string}`,
+): Promise<bigint> {
+  return withFallback(async (client) => {
+    const result = await client.readContract({
+      address: PUSD_ADDRESS,
+      abi: ERC20_ABI,
+      functionName: 'allowance',
+      args: [owner, spender],
+    });
+    return result as bigint;
+  });
+}
+
+export async function getUsdceBalance(owner: `0x${string}`): Promise<bigint> {
+  return withFallback(async (client) => {
+    const result = await client.readContract({
+      address: USDC_E_ADDRESS,
+      abi: ERC20_ABI,
+      functionName: 'balanceOf',
+      args: [owner],
+    });
+    return result as bigint;
+  });
+}
+
+export async function getUsdceAllowance(
   owner: `0x${string}`,
   spender: `0x${string}`,
 ): Promise<bigint> {
   return withFallback(async (client) => {
     const result = await client.readContract({
       address: USDC_E_ADDRESS,
-      abi: USDC_ABI,
+      abi: ERC20_ABI,
       functionName: 'allowance',
       args: [owner, spender],
     });
@@ -110,3 +158,5 @@ export async function isCtfApprovedForAll(
     return result as boolean;
   });
 }
+
+export { COLLATERAL_ONRAMP };
