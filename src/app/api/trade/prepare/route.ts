@@ -118,14 +118,24 @@ export async function POST(req: NextRequest) {
   }
 
   const sizeUsd = sizeOverrideUsd ?? Number(rec.size);
+  const price = Number(rec.price);
+  // Polymarket SDK's `size` is SHARES, not USD. shares = USD / price so that
+  // a SELL order's takerAmount (USDC received) actually equals sizeUsd, and a
+  // BUY order's makerAmount (USDC spent) actually equals sizeUsd. Without
+  // this conversion the order is silently sized in contracts, which on a
+  // $0.25 market means 4× less notional than the user thinks.
+  if (!Number.isFinite(price) || price <= 0) {
+    return Response.json({ error: 'invalid_recommendation_price' }, { status: 500 });
+  }
+  const sizeShares = sizeUsd / price;
 
   // ---- build typed data ----
   let typedData;
   try {
     typedData = await buildTypedData({
       tokenId: rec.token_id,
-      price: Number(rec.price),
-      size: sizeUsd,
+      price,
+      size: sizeShares,
       side: rec.side,
       maker: userAddress,
       taker: '0x0000000000000000000000000000000000000000',
@@ -152,7 +162,7 @@ export async function POST(req: NextRequest) {
       market_condition_id: rec.market_condition_id,
       token_id: rec.token_id,
       side: rec.side,
-      price: Number(rec.price),
+      price,
       size_usd: sizeUsd,
       signature_type: signatureType,
       order_payload: typedData as unknown as Json,

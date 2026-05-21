@@ -34,6 +34,19 @@ export function TradeCard({
   >('idle');
   const [error, setError] = useState<string | null>(null);
   const [clobOrderId, setClobOrderId] = useState<string | null>(null);
+  // Size is in USD (server caps at $1-$100 via PrepareBody). The wallet
+  // popup will show this converted to share-denominated maker/taker amounts.
+  const [sizeUsdInput, setSizeUsdInput] = useState<string>(
+    Number(rec.size).toFixed(2),
+  );
+
+  const sizeUsd = Number.parseFloat(sizeUsdInput);
+  const sizeValid =
+    Number.isFinite(sizeUsd) && sizeUsd >= 1 && sizeUsd <= 100;
+  const sharesEstimate =
+    sizeValid && rec.price > 0 ? sizeUsd / Number(rec.price) : null;
+  const inFlight =
+    status === 'preparing' || status === 'signing' || status === 'submitting';
 
   async function execute() {
     if (!userAddress) {
@@ -43,6 +56,10 @@ export function TradeCard({
     const ethereum = typeof window !== 'undefined' ? window.ethereum : undefined;
     if (!ethereum) {
       setError('no injected wallet');
+      return;
+    }
+    if (!sizeValid) {
+      setError('size must be $1-$100');
       return;
     }
     setError(null);
@@ -92,6 +109,7 @@ export function TradeCard({
           recommendationId: rec.id,
           userAddress,
           signatureType: 0,
+          sizeOverrideUsd: sizeUsd,
         }),
       });
       const prepBody = (await prep.json().catch(() => null)) as
@@ -186,9 +204,29 @@ export function TradeCard({
         {rec.rationale}
       </p>
 
-      <div className="mb-2.5 flex items-center gap-3 text-[10px] uppercase tracking-wider text-zinc-500">
-        <span>size {Number(rec.size).toFixed(2)}</span>
-        <span className="h-0.5 w-0.5 rounded-full bg-zinc-700" />
+      <div className="mb-2.5 flex items-center justify-between gap-3 text-[10px] uppercase tracking-wider text-zinc-500">
+        <label className="flex items-center gap-1.5 normal-case tracking-normal">
+          <span className="text-[10px] uppercase tracking-wider">size $</span>
+          <input
+            type="number"
+            min={1}
+            max={100}
+            step={0.01}
+            value={sizeUsdInput}
+            onChange={(e) => setSizeUsdInput(e.target.value)}
+            disabled={inFlight || status === 'done'}
+            className={`w-16 rounded border bg-white/[0.03] px-1.5 py-0.5 text-right font-mono text-[11px] text-zinc-200 focus:outline-none disabled:opacity-50 ${
+              sizeValid
+                ? 'border-white/[0.08] focus:border-white/20'
+                : 'border-rose-500/40 focus:border-rose-500/60'
+            }`}
+          />
+          {sharesEstimate !== null ? (
+            <span className="font-mono text-[10px] normal-case tracking-normal text-zinc-500">
+              ≈ {sharesEstimate.toFixed(sharesEstimate >= 100 ? 0 : 2)} shares
+            </span>
+          ) : null}
+        </label>
         <span className="text-emerald-300/80">
           {(rec.conviction * 100).toFixed(0)}% conviction
         </span>
@@ -196,12 +234,7 @@ export function TradeCard({
 
       <button
         onClick={() => void execute()}
-        disabled={
-          status === 'preparing' ||
-          status === 'signing' ||
-          status === 'submitting' ||
-          status === 'done'
-        }
+        disabled={inFlight || status === 'done' || !sizeValid}
         className="w-full rounded-lg bg-zinc-50 px-3 py-1.5 text-xs font-medium text-black transition hover:bg-white disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-500"
       >
         {status === 'idle' ? 'execute' : status === 'error' ? 'retry' : status}
