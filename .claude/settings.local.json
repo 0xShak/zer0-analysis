@@ -3,7 +3,15 @@
     "allow": [
       "Bash(pnpm lint *)",
       "Bash(pnpm exec *)",
-      "Bash(pnpm build *)"
+      "Bash(pnpm build *)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(git clone *)",
+      "Bash(mkdir -p /c/Users/ReachElysium/projects/zer0-skill-pack/skills/polymarket-thesis /c/Users/ReachElysium/projects/zer0-skill-pack/skills/polymarket-edge /c/Users/ReachElysium/projects/zer0-skill-pack/skills/polymarket-contrarian /c/Users/ReachElysium/projects/zer0-skill-pack/skills/narrative-vs-markets /c/Users/ReachElysium/projects/zer0-skill-pack/skills/prediction-journal /c/Users/ReachElysium/projects/zer0-skill-pack/skills/polymarket-alpha-comments)",
+      "Read(//c/Users/ReachElysium/projects/zer0-skill-pack/**)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)"
     ]
   }
 }
