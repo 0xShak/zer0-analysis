@@ -655,7 +655,18 @@ export function TradeCard({
       </button>
       {status === 'done' && clobOrderId ? (
         <p className="mt-2 truncate font-mono text-[10px] text-emerald-300/80">
-          filled · order {clobOrderId}
+          filled · order{' '}
+          <a
+            href="https://polymarket.com/portfolio"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline decoration-emerald-300/40 underline-offset-2 hover:text-emerald-200 hover:decoration-emerald-200"
+            title={clobOrderId}
+          >
+            {clobOrderId.length > 12
+              ? `${clobOrderId.slice(0, 6)}…${clobOrderId.slice(-4)}`
+              : clobOrderId}
+          </a>
         </p>
       ) : null}
       {status === 'cancelled' ? (
