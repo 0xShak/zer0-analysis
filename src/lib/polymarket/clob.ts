@@ -192,6 +192,71 @@ export async function postSignedOrder(
   return client.postOrder(signedOrder, orderType);
 }
 
+export type OrderResolution =
+  | { kind: 'matched'; sizeMatched: string; status: string }
+  | { kind: 'cancelled'; status: string; sizeMatched: string }
+  | { kind: 'timeout'; status: string; sizeMatched: string }
+  | { kind: 'unknown'; reason: string };
+
+/**
+ * Polymarket's `postOrder` response is just an acknowledgment — it doesn't
+ * tell us if the matcher actually filled the order, because matching and
+ * on-chain settlement happen asynchronously (1-6s after submit). To know
+ * what really happened we poll `getOrder(orderID)` until the status leaves
+ * "LIVE" or we time out.
+ *
+ *   status 'MATCHED' (or any nonzero `size_matched`) → matched
+ *   status 'CANCELED' / 'UNMATCHED' / 'KILLED'      → cancelled
+ *   anything else after timeout                      → timeout (unclear)
+ */
+export async function pollOrderResolution(
+  orderId: string,
+  opts: { intervalMs?: number; timeoutMs?: number } = {},
+): Promise<OrderResolution> {
+  const intervalMs = opts.intervalMs ?? 1000;
+  const timeoutMs = opts.timeoutMs ?? 8000;
+  const deadline = Date.now() + timeoutMs;
+  const client = await getClobClient();
+
+  let lastStatus = '';
+  let lastSizeMatched = '0';
+
+  while (Date.now() < deadline) {
+    try {
+      const order = (await client.getOrder(orderId)) as
+        | { status?: string; size_matched?: string }
+        | null
+        | undefined;
+      if (order) {
+        lastStatus = (order.status ?? '').toUpperCase();
+        lastSizeMatched = order.size_matched ?? '0';
+        if (parseFloat(lastSizeMatched) > 0 || lastStatus === 'MATCHED') {
+          return { kind: 'matched', sizeMatched: lastSizeMatched, status: lastStatus };
+        }
+        if (
+          lastStatus === 'CANCELED' ||
+          lastStatus === 'CANCELLED' ||
+          lastStatus === 'UNMATCHED' ||
+          lastStatus === 'KILLED'
+        ) {
+          return { kind: 'cancelled', status: lastStatus, sizeMatched: lastSizeMatched };
+        }
+      }
+    } catch (err) {
+      // 404 means Polymarket dropped the order — usually means it was
+      // killed/unmatched and cleaned up. Treat as cancelled.
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/404|not.*found/i.test(msg)) {
+        return { kind: 'cancelled', status: 'NOT_FOUND', sizeMatched: '0' };
+      }
+      // Otherwise transient — keep polling.
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+
+  return { kind: 'timeout', status: lastStatus, sizeMatched: lastSizeMatched };
+}
+
 /**
  * Fetch the price that crosses the spread on `tokenId` for the given side:
  *   - BUY  → best (lowest)  ask

@@ -164,6 +164,57 @@ export function TradeCard({
     setClobOrderId(null);
     setCancelReason(null);
     try {
+      // Defensive preflight — if the user clicked execute before the
+      // background allowance fetch settled, do it now synchronously.
+      // Without this, `approval` could be null at this point, causing
+      // `needsUsdcApproval` to evaluate false and silently skipping the
+      // approve step. That's exactly the race that produced Polymarket
+      // submissions on wallets with zero allowance.
+      let currentApproval = approval;
+      if (!currentApproval) {
+        setStatus('checking-allowance');
+        try {
+          const res = await fetch(
+            `/api/trade/allowance?address=${encodeURIComponent(userAddress)}&recommendationId=${rec.id}`,
+            { cache: 'no-store' },
+          );
+          if (res.ok) {
+            const body = (await res.json()) as {
+              unknown?: boolean;
+              usdc: { allowance?: string; spender: string };
+              ctf: { approved?: boolean; spender: string };
+              exchange: { negRisk: boolean };
+            };
+            if (body.unknown) {
+              currentApproval = {
+                usdcOk: false,
+                ctfOk: false,
+                spender: body.usdc.spender,
+                negRisk: body.exchange.negRisk,
+                unknown: true,
+              };
+            } else {
+              let allowanceBig: bigint;
+              try {
+                allowanceBig = BigInt(body.usdc.allowance ?? '0');
+              } catch {
+                allowanceBig = BigInt(0);
+              }
+              currentApproval = {
+                usdcOk: allowanceBig >= USDC_OK_THRESHOLD,
+                ctfOk: !!body.ctf.approved,
+                spender: body.usdc.spender,
+                negRisk: body.exchange.negRisk,
+              };
+            }
+            setApproval(currentApproval);
+          }
+        } catch {
+          // Allowance fetch is best-effort; if it blows up we proceed
+          // without preflight data. Polymarket will surface the real
+          // rejection at submit time if allowance is missing.
+        }
+      }
       // Polymarket is on Polygon (chainId 137 / 0x89). The EIP-712 domain we
       // ask the wallet to sign also encodes 137 — if the wallet is on a
       // different chain MetaMask rejects the sign request with -32603.
@@ -204,38 +255,46 @@ export function TradeCard({
       // setApprovalForAll (SELL only). Each is one on-chain tx the user
       // signs in their wallet. We wait for receipts so a subsequent
       // signTypedData / postOrder doesn't race ahead of the approval.
-      if (approval && (needsUsdcApproval || needsCtfApproval)) {
-        if (needsUsdcApproval) {
+      // We use `currentApproval` (just-fetched if needed) rather than the
+      // possibly-stale closure `approval` to avoid the race condition.
+      if (currentApproval) {
+        const usdcNeeded = !currentApproval.usdcOk;
+        const ctfNeeded =
+          rec.side === 'SELL' && !currentApproval.ctfOk;
+        if (usdcNeeded) {
           setStatus('approving-usdc');
           const txHash = await sendApproveUsdc(
             ethereum,
             userAddress,
-            approval.spender,
+            currentApproval.spender,
           );
           const receipt = await waitForReceipt(ethereum, txHash);
           if (receipt.status !== 'success') {
             throw new Error('USDC approve tx reverted');
           }
         }
-        if (needsCtfApproval) {
+        if (ctfNeeded) {
           setStatus('approving-ctf');
           const txHash = await sendSetApprovalForAllCtf(
             ethereum,
             userAddress,
-            approval.spender,
+            currentApproval.spender,
           );
           const receipt = await waitForReceipt(ethereum, txHash);
           if (receipt.status !== 'success') {
             throw new Error('CTF approve tx reverted');
           }
         }
-        // Locally mark approvals as done so any retry within this session
-        // skips the on-chain dance. A page reload will re-check.
-        setApproval({
-          ...approval,
-          usdcOk: true,
-          ctfOk: rec.side === 'SELL' ? true : approval.ctfOk,
-        });
+        if (usdcNeeded || ctfNeeded) {
+          // Locally mark approvals as done so a retry within this session
+          // skips the on-chain dance. A reload will re-check.
+          setApproval({
+            ...currentApproval,
+            usdcOk: true,
+            ctfOk: rec.side === 'SELL' ? true : currentApproval.ctfOk,
+            unknown: false,
+          });
+        }
       }
 
       setStatus('preparing');

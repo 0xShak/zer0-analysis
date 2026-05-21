@@ -4,7 +4,11 @@ import type { Json } from '@/lib/database.types';
 import { clientIpFromHeaders } from '@/lib/chat/fingerprint';
 import { rateLimit, rateLimitKey } from '@/lib/trades/rate-limit';
 import { SubmitBody } from '@/lib/trades/validators';
-import { postSignedOrder, OrderType } from '@/lib/polymarket/clob';
+import {
+  OrderType,
+  pollOrderResolution,
+  postSignedOrder,
+} from '@/lib/polymarket/clob';
 import type { SignedOrder } from '@polymarket/clob-client';
 
 export const runtime = 'nodejs';
@@ -200,28 +204,51 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  // Classify the FAK response three ways:
-  //   matched  → on-chain settlement happened, status='filled'
-  //   killed   → API accepted but matcher couldn't fill, status='cancelled'
-  //   (the rejected case was already handled above via success===false)
-  // FAK has no resting state, so any non-matched success is a kill.
-  const clobStatus =
+  // Polymarket's postOrder is an ACK, not a fill confirmation. Matching
+  // and on-chain settlement happen async (~2-6s). The initial response
+  // sometimes carries `status='matched'` + transactionsHashes when the
+  // matcher was already done by the time the HTTP response was built, but
+  // commonly it's just `{success: true, orderID}`. We trust either signal
+  // when present; otherwise we poll getOrder() for the true resolution.
+  const inlineStatus =
     typeof resultObj.status === 'string' ? resultObj.status : '';
-  const txHashes = Array.isArray(resultObj.transactionsHashes)
+  const inlineTxHashes = Array.isArray(resultObj.transactionsHashes)
     ? (resultObj.transactionsHashes as unknown[]).filter(
         (h): h is string => typeof h === 'string',
       )
     : [];
-  const matched =
-    clobStatus === 'matched' || clobStatus === 'filled' || txHashes.length > 0;
+  const inlineMatched =
+    inlineStatus === 'matched' ||
+    inlineStatus === 'filled' ||
+    inlineTxHashes.length > 0;
+
+  let matched = inlineMatched;
+  let clobStatus = inlineStatus;
+  let sizeMatched = '';
+  if (!inlineMatched && clobOrderId) {
+    const resolution = await pollOrderResolution(clobOrderId);
+    console.log('[trade/submit] poll resolution', { tradeId, resolution });
+    if (resolution.kind === 'matched') {
+      matched = true;
+      clobStatus = resolution.status || 'MATCHED';
+      sizeMatched = resolution.sizeMatched;
+    } else if (resolution.kind === 'cancelled') {
+      clobStatus = resolution.status || 'CANCELED';
+      sizeMatched = resolution.sizeMatched;
+    } else if (resolution.kind === 'timeout') {
+      clobStatus = resolution.status || 'TIMEOUT';
+      sizeMatched = resolution.sizeMatched;
+    }
+  }
+  const txHashes = inlineTxHashes;
   const now = new Date().toISOString();
 
   const finalStatus = matched ? 'filled' : 'cancelled';
   const finalReason = matched
     ? null
-    : `unmatched: status="${clobStatus || 'unknown'}", makingAmount=${
-        resultObj.makingAmount ?? '?'
-      }, takingAmount=${resultObj.takingAmount ?? '?'}`;
+    : `unmatched: status="${clobStatus || 'unknown'}", size_matched=${
+        sizeMatched || '0'
+      }`;
 
   const { error: updateErr } = await supabase
     .from('trades')
