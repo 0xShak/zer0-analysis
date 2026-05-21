@@ -1,15 +1,17 @@
 // Server-side balance / allowance / approval reader for Polymarket V2.
 //
 // V2 trades against pUSD (an ERC-20 wrapping USDC.e via the CollateralOnramp).
-// We read four things to drive the UI's first-trade setup:
-//   - pUSD balance + pUSD allowance on the V2 Exchange (the actual trading
-//     prerequisite)
-//   - USDC.e balance + USDC.e allowance on the Onramp (so the UI can drive
-//     the USDC.e → pUSD wrap if the user has USDC.e but no pUSD)
-//   - CTF.isApprovedForAll on the V2 Exchange (only needed for SELLs)
+// After the deposit-wallet migration, pUSD must reside *in the user's
+// deposit wallet*, not their EOA. The route now reads:
+//   - pUSD balance + pUSD allowance on the V2 Exchange, scoped to the
+//     deposit wallet address
+//   - USDC.e balance (EOA) + USDC.e allowance on the Onramp (still EOA-side
+//     — the wrap call is the user's last EOA-signed step)
+//   - CTF.isApprovedForAll on the V2 Exchange, scoped to the deposit wallet
+//   - Deposit wallet deployment status (separate getter in deposit-wallet.ts)
 //
-// Reads go through a multi-RPC fallback so a single rate-limited public RPC
-// doesn't take the preflight down.
+// All reads go through a multi-RPC fallback so a single rate-limited public
+// RPC doesn't take the preflight down.
 
 import { createPublicClient, http, parseAbi, type PublicClient } from 'viem';
 import { polygon } from 'viem/chains';

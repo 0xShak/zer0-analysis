@@ -10,6 +10,7 @@ import {
   getBookContext,
   getMarketMeta,
 } from '@/lib/polymarket/clob';
+import { deriveDepositWalletAddress } from '@/lib/polymarket/deposit-wallet';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -179,6 +180,15 @@ export async function POST(req: NextRequest) {
   }
 
   // ---- build typed data + wire-body order ----
+  // For POLY_1271 (signatureType === 3) the on-chain maker is the user's
+  // deposit wallet, not the EOA. Derive it deterministically (CREATE2 over
+  // the factory + implementation); we don't have to know whether it's
+  // deployed yet — the address is fixed.
+  const maker =
+    signatureType === 3
+      ? deriveDepositWalletAddress(userAddress)
+      : userAddress;
+
   let prepared;
   try {
     prepared = await buildTypedData({
@@ -186,7 +196,7 @@ export async function POST(req: NextRequest) {
       price,
       size: sizeShares,
       side: rec.side,
-      maker: userAddress,
+      maker,
       signatureType,
       tickSize,
       negRisk,
@@ -197,7 +207,7 @@ export async function POST(req: NextRequest) {
     console.error('[trade/prepare] buildTypedData failed', message, stack);
     return Response.json({ error: 'clob_unavailable', detail: message }, { status: 500 });
   }
-  const { typedData, order } = prepared;
+  const { typedData, order, wrapSuffix } = prepared;
 
   // ---- insert trades row (status='prepared', payload sans signature) ----
   const { data: inserted, error: insertErr } = await supabase
@@ -223,10 +233,26 @@ export async function POST(req: NextRequest) {
     return Response.json({ error: 'db_insert_failed' }, { status: 500 });
   }
 
+  // walletMeta is consumed by the Telegram bot (which signs server-side and
+  // POSTs from a non-blocked region). The web flow ignores this field and
+  // continues to use its own ConnectKit-supplied signer + sigType — so
+  // adding this is zero-regression for /app/ users.
+  const walletType: 'eoa' | 'proxy' | 'safe' | 'deposit_wallet' =
+    signatureType === 0
+      ? 'eoa'
+      : signatureType === 1
+        ? 'proxy'
+        : signatureType === 2
+          ? 'safe'
+          : 'deposit_wallet';
+
   return Response.json({
     tradeId: inserted.id,
     typedData,
     order,
+    // For POLY_1271 only: bytes the browser appends to the raw ECDSA
+    // signature so the deposit wallet's isValidSignature can parse it.
+    wrapSuffix,
     expiresAt: rec.expires_at,
     market: {
       question,
@@ -239,6 +265,13 @@ export async function POST(req: NextRequest) {
       recommendationPrice: recPrice,
       bookPrice,
       orderType: 'FAK',
+    },
+    walletMeta: {
+      funder: order.maker,
+      signer: order.signer,
+      signatureType,
+      walletType,
+      requiresErc7739Wrap: signatureType === 3,
     },
   });
 }

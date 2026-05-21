@@ -34,6 +34,18 @@ export const NEG_RISK_CTF_EXCHANGE_V2 = '0xe2222d279d744050d28e00520010520000310
 // Conditional Tokens framework address — unchanged between V1 and V2.
 export const CONDITIONAL_TOKENS = '0x4D97DCd97eC945f40cF65F87097ACe5EA0476045';
 
+// Deposit Wallet factory + current implementation on Polygon. Sourced from
+// `@polymarket/builder-relayer-client/dist/config/index.js` so the values
+// stay pinned to whatever the relayer SDK expects. The factory is a singleton
+// (CREATE2-deterministic); the implementation can be swapped by Polymarket
+// admins, so re-confirm if a future upgrade lands.
+export const DEPOSIT_WALLET_FACTORY = '0x00000000000Fb5C9ADea0298D729A0CB3823Cc07';
+export const DEPOSIT_WALLET_IMPLEMENTATION = '0x58CA52ebe0DadfdF531Cde7062e76746de4Db1eB';
+
+// Polymarket's transaction relayer for builders. Sponsors gas for deposit-
+// wallet deployment + executeBatch.
+export const POLYMARKET_RELAYER_URL = 'https://relayer-v2.polymarket.com/';
+
 export function exchangeForMarket(negRisk: boolean): string {
   return negRisk ? NEG_RISK_CTF_EXCHANGE_V2 : CTF_EXCHANGE_V2;
 }

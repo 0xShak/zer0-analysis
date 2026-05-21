@@ -35,4 +35,14 @@ export const env = {
   get RELAY_PRIVATE_KEY() { return need('RELAY_PRIVATE_KEY'); },
   get INNGEST_EVENT_KEY() { return need('INNGEST_EVENT_KEY'); },
   get INNGEST_SIGNING_KEY() { return need('INNGEST_SIGNING_KEY'); },
+
+  // Telegram v3 — WalletConnect + region-aware order submission.
+  get WALLETCONNECT_PROJECT_ID() { return need('WALLETCONNECT_PROJECT_ID'); },
+  // Optional. When set, the bot forwards POST /order through this relay
+  // (e.g. a Fly.io container in sa-saopaulo-1) instead of egressing
+  // directly. Format: full URL of the relay's `/order` endpoint.
+  POLYMARKET_RELAY_URL: process.env.POLYMARKET_RELAY_URL ?? '',
+  // HMAC-shared-secret for relay auth. Empty = no auth (use mTLS / private
+  // network instead). Set when POLYMARKET_RELAY_URL is set on a public host.
+  POLYMARKET_RELAY_SECRET: process.env.POLYMARKET_RELAY_SECRET ?? '',
 };

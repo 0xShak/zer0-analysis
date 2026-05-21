@@ -22,7 +22,7 @@ import {
   OrderType,
   type ApiKeyCreds,
 } from '@polymarket/clob-client-v2';
-import { parseUnits } from 'viem';
+import { encodeAbiParameters, keccak256, parseUnits, toHex } from 'viem';
 import { env } from '../env';
 import { exchangeForMarket } from './contracts';
 import {
@@ -34,6 +34,7 @@ import {
   V2_DOMAIN_NAME,
   V2_DOMAIN_VERSION,
   V2_ORDER_STRUCT,
+  V2_ORDER_TYPE_STRING,
   ZERO_ADDRESS,
   type SignatureTypeNum,
   type TickSize,
@@ -287,6 +288,102 @@ export interface V2OrderForWire {
 export interface PreparedOrder {
   typedData: V2TypedData;
   order: V2OrderForWire;
+  /**
+   * Present iff `signatureType === 3`. Per ERC-7739, the final signature on
+   * a `POLY_1271` order is `innerSig || appDomainSep || contentsHash ||
+   * contentsType || contentsTypeLen` — Polymarket's deposit-wallet contract
+   * parses this layout in `isValidSignature`. The browser signs the
+   * TypedDataSign payload (yielding `innerSig`) and appends this suffix
+   * verbatim. We do the (chain-dependent) hash math server-side because the
+   * inputs are deterministic from the order + exchange domain.
+   */
+  wrapSuffix?: `0x${string}`;
+}
+
+// ---- ERC-7739 wrap helpers (POLY_1271 only) ----
+
+const DOMAIN_TYPEHASH = keccak256(
+  toHex('EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)'),
+);
+const NAME_HASH = keccak256(toHex(V2_DOMAIN_NAME));
+const VERSION_HASH = keccak256(toHex(V2_DOMAIN_VERSION));
+const ORDER_TYPEHASH = keccak256(toHex(V2_ORDER_TYPE_STRING));
+
+/**
+ * keccak256(EIP712Domain || nameHash || versionHash || chainId || verifyingContract).
+ * Matches what the V2 Exchange contract recomputes when verifying signatures.
+ */
+function computeAppDomainSep(verifyingContract: `0x${string}`): `0x${string}` {
+  return keccak256(
+    encodeAbiParameters(
+      [
+        { type: 'bytes32' },
+        { type: 'bytes32' },
+        { type: 'bytes32' },
+        { type: 'uint256' },
+        { type: 'address' },
+      ],
+      [DOMAIN_TYPEHASH, NAME_HASH, VERSION_HASH, BigInt(CHAIN_ID), verifyingContract],
+    ),
+  );
+}
+
+/** keccak256(ORDER_TYPEHASH || order fields…). Used inside the wrap suffix. */
+function computeOrderContentsHash(
+  message: V2OrderTypedData['message'],
+): `0x${string}` {
+  return keccak256(
+    encodeAbiParameters(
+      [
+        { type: 'bytes32' },
+        { type: 'uint256' },
+        { type: 'address' },
+        { type: 'address' },
+        { type: 'uint256' },
+        { type: 'uint256' },
+        { type: 'uint256' },
+        { type: 'uint8' },
+        { type: 'uint8' },
+        { type: 'uint256' },
+        { type: 'bytes32' },
+        { type: 'bytes32' },
+      ],
+      [
+        ORDER_TYPEHASH,
+        BigInt(message.salt),
+        message.maker as `0x${string}`,
+        message.signer as `0x${string}`,
+        BigInt(message.tokenId),
+        BigInt(message.makerAmount),
+        BigInt(message.takerAmount),
+        message.side,
+        message.signatureType,
+        BigInt(message.timestamp),
+        message.metadata as `0x${string}`,
+        message.builder as `0x${string}`,
+      ],
+    ),
+  );
+}
+
+/**
+ * The bytes appended to the raw ECDSA signature for ERC-7739 / POLY_1271
+ * orders. Layout (after the 65-byte ECDSA sig):
+ *   appDomainSep(32) || contentsHash(32) || contentsType(N) || lenHex(2)
+ * where N is the byte length of `V2_ORDER_TYPE_STRING` and lenHex encodes N
+ * as a big-endian uint16.
+ */
+function buildWrapSuffix(
+  exchangeAddress: `0x${string}`,
+  message: V2OrderTypedData['message'],
+): `0x${string}` {
+  const appDomainSep = computeAppDomainSep(exchangeAddress);
+  const contentsHash = computeOrderContentsHash(message);
+  const typeStringBytes = toHex(V2_ORDER_TYPE_STRING);
+  // V2_ORDER_TYPE_STRING is ASCII, so byte length = string length.
+  const typeStringLen = V2_ORDER_TYPE_STRING.length;
+  const lenHex = typeStringLen.toString(16).padStart(4, '0');
+  return `0x${appDomainSep.slice(2)}${contentsHash.slice(2)}${typeStringBytes.slice(2)}${lenHex}` as `0x${string}`;
 }
 
 /**
@@ -398,7 +495,12 @@ export async function buildTypedData(args: BuildTypedDataArgs): Promise<Prepared
     builder: BYTES32_ZERO,
   };
 
-  return { typedData, order };
+  const wrapSuffix =
+    args.signatureType === 3
+      ? buildWrapSuffix(verifyingContract as `0x${string}`, orderMessage)
+      : undefined;
+
+  return { typedData, order, wrapSuffix };
 }
 
 export type OrderResolution =

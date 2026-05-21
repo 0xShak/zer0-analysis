@@ -1,10 +1,19 @@
 // GET /api/trade/allowance?address=0x...&recommendationId=<uuid>
 //
-// Preflight read of everything the TradeCard needs to decide which first-
-// trade setup steps to drive: pUSD balance + V2 Exchange allowance, USDC.e
-// balance + Onramp allowance (for wrapping), and CTF setApprovalForAll
-// status (used only for SELL). Lets the UI prompt the user through
-// USDC.e → wrap → pUSD approve → sign before touching the order.
+// Preflight read for the V2 deposit-wallet trade flow. Returns:
+//   - depositWallet: { address, deployed }      — CREATE2-derived from EOA
+//   - pusd: { balance, allowance, spender }     — balances OF THE WALLET
+//                                                  (not the EOA) and the
+//                                                  pUSD→V2Exchange approval
+//   - usdce: { balance, allowance, onramp }     — EOA-side; needed to drive
+//                                                  the USDC.e → pUSD wrap
+//                                                  (`to` = deposit wallet)
+//   - ctf: { approved, spender }                — CTF.setApprovalForAll
+//                                                  by the deposit wallet
+//                                                  (SELL only)
+//   - exchange: { negRisk, address }            — V2 Exchange address per
+//                                                  the recommendation's
+//                                                  neg_risk flag
 
 import type { NextRequest } from 'next/server';
 import { utils as ethersUtils } from 'ethers';
@@ -19,6 +28,10 @@ import {
   getUsdceBalance,
   isCtfApprovedForAll,
 } from '@/lib/polymarket/allowance';
+import {
+  deriveDepositWalletAddress,
+  isDepositWalletDeployed,
+} from '@/lib/polymarket/deposit-wallet';
 import {
   COLLATERAL_ONRAMP,
   CONDITIONAL_TOKENS,
@@ -50,8 +63,8 @@ export async function GET(req: NextRequest) {
   }
 
   // Optional: look up the recommendation's neg_risk flag so we know which
-  // V2 Exchange contract is the spender. Falls back to the regular V2 CTF
-  // Exchange if the recommendation can't be resolved.
+  // V2 Exchange is the relevant spender. Default = regular CTF Exchange V2
+  // if the recommendation can't be resolved.
   let negRisk = false;
   const recId = req.nextUrl.searchParams.get('recommendationId');
   if (recId && UUID_RE.test(recId)) {
@@ -66,20 +79,30 @@ export async function GET(req: NextRequest) {
 
   const exchange = exchangeForMarket(negRisk) as `0x${string}`;
   const onramp = COLLATERAL_ONRAMP as `0x${string}`;
-  const owner = address as `0x${string}`;
+  const eoa = address as `0x${string}`;
+  const depositWallet = deriveDepositWalletAddress(eoa);
 
+  let deployed: boolean;
   let pusdBalance: bigint;
   let pusdAllowance: bigint;
   let usdceBalance: bigint;
   let usdceAllowance: bigint;
   let ctfApproved: boolean;
   try {
-    [pusdBalance, pusdAllowance, usdceBalance, usdceAllowance, ctfApproved] = await Promise.all([
-      getPusdBalance(owner),
-      getPusdAllowance(owner, exchange),
-      getUsdceBalance(owner),
-      getUsdceAllowance(owner, onramp),
-      isCtfApprovedForAll(owner, exchange),
+    [
+      deployed,
+      pusdBalance,
+      pusdAllowance,
+      usdceBalance,
+      usdceAllowance,
+      ctfApproved,
+    ] = await Promise.all([
+      isDepositWalletDeployed(eoa),
+      getPusdBalance(depositWallet),
+      getPusdAllowance(depositWallet, exchange),
+      getUsdceBalance(eoa),
+      getUsdceAllowance(eoa, onramp),
+      isCtfApprovedForAll(depositWallet, exchange),
     ]);
   } catch (err) {
     // All fallback RPCs failed. Return 200 with `unknown: true` so the
@@ -91,6 +114,7 @@ export async function GET(req: NextRequest) {
     }
     return Response.json({
       unknown: true,
+      depositWallet: { address: depositWallet, deployed: false },
       pusd: { spender: exchange, token: PUSD_ADDRESS },
       usdce: { onramp, token: USDC_E_ADDRESS },
       ctf: { spender: exchange, token: CONDITIONAL_TOKENS },
@@ -99,6 +123,10 @@ export async function GET(req: NextRequest) {
   }
 
   return Response.json({
+    depositWallet: {
+      address: depositWallet,
+      deployed,
+    },
     pusd: {
       balance: pusdBalance.toString(),
       allowance: pusdAllowance.toString(),
