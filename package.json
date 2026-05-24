@@ -7,6 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "test": "vitest run",
+    "bot": "tsx --env-file=.env.local src/telegram-bot/index.ts",
     "force-rec": "tsx --env-file=.env.local scripts/force-recommendation.ts"
   },
   "dependencies": {
@@ -43,6 +45,7 @@
     "eslint-config-next": "16.2.6",
     "tailwindcss": "^4",
     "tsx": "^4.22.3",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^4.1.7"
   }
 }

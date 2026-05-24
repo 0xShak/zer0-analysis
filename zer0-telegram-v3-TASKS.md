@@ -37,11 +37,11 @@
 
 ### Discover the real commands first
 Before relying on the example commands below, **read `package.json`** and use the project's actual scripts. Record the real ones here on first run:
-- typecheck: `____` (e.g. `npm run typecheck` / `tsc --noEmit`)
-- lint: `____` (e.g. `npm run lint`)
-- test: `____` (e.g. `npm test` / `vitest run`)
-- build: `____` (e.g. `npm run build`)
-- db migrate (local/shadow): `____` (e.g. `supabase db reset` / `supabase migration up`)
+- typecheck: `npx tsc --noEmit`
+- lint: `npx eslint` (or `npm run lint`)
+- test: `npm test` → `vitest run` (installed 2026-05-24)
+- build: `npx next build` (use `NODE_OPTIONS=--max-old-space-size=8192` to avoid post-compile typecheck OOM)
+- db migrate (local/shadow): `supabase db push` / `supabase migration up`
 
 **`VERIFY: regression`** (run after every task): `typecheck` + `lint` + `test` + `build` all green, and no pre-existing test newly fails.
 
@@ -58,9 +58,9 @@ Before relying on the example commands below, **read `package.json`** and use th
   - Do: emit the V2 domain (`name "Polymarket CTF Exchange"`, `version "2"`, `chainId 137`, correct `verifyingContract` incl. neg-risk) and the 11-field `Order`. Wire amount math from spec §A5. Depends on: nothing.
   - **VERIFY:** unit test with a fixed input (`price`, `size`, `side`, `tokenId`, `salt`) asserts the exact `domain`, `types`, `primaryType`, and `message` fields, and that BUY/SELL `makerAmount`/`takerAmount` match the §A5 formulas in 6-decimal units. + regression.
 
-- [ ] **T1.3 — ⭐ ERC-7739 `TypedDataSign` branch for `signatureType === 3` (in `clob.ts` + `wrap` helper)**
+- [x] **T1.3 — ⭐ ERC-7739 `TypedDataSign` branch for `signatureType === 3` (in `clob.ts` + `wrap` helper)** ✅ 2026-05-24
   - Do: when wallet type is `deposit_wallet`, build the nested `TypedDataSign` payload (spec §A3). This is the **highest-risk** task.
-  - **VERIFY (BLOCKING):** unit test builds an Order via `@polymarket/clob-client-v2` for a fixed input, builds the same Order through our code, and **byte-diffs the wrapped signature / typed-data digest**. They must be **identical**. If they differ, **do NOT proceed** — mark `[✗]`, and fall back to using the SDK's `createOrder` with a WalletConnect signer adapter (record this decision). + regression.
+  - **VERIFY (BLOCKING):** `tests/clob-v2-byte-parity.test.ts` runs `ExchangeOrderBuilderV2.buildSignedOrder` (loaded via file:// URL to bypass the SDK's exports gate) and our `buildTypedData → ethers _signTypedData → wrapErc7739Signature` for the same fixed inputs. Both wrapped signatures are **byte-identical** for BUY/CTF_EXCHANGE_V2 and SELL/NEG_RISK_CTF_EXCHANGE_V2. The inline `buildWrapSuffix()` in clob.ts also matches the SDK's suffix bytes verbatim. 3/3 passing.
 
 - [ ] **T1.4 — Wallet resolver (`src/telegram-bot/polymarket/resolve-wallet.ts`)**
   - Do: resolve an EOA → `{ funder, signatureType: 1|2|3, walletType }` via the resolve endpoint or local CREATE2 against the deposit-wallet factory (spec §D1).
@@ -91,9 +91,9 @@ Before relying on the example commands below, **read `package.json`** and use th
   - Do: produce `{ uri, deepLink, qrPng }`, send deep link + QR photo in Telegram, persist `{telegram_user_id, topic, eoa, funder, signature_type, wallet_type, expires_at}` on `approval()` (spec §B3, §B5, §D6).
   - **VERIFY:** unit tests — `deepLink` matches `https://metamask.app.link/wc?uri=<encoded>`; `qrPng` is a valid PNG buffer; on a mocked `approval()` the `tg_wc_sessions` row is written with correct fields. (Real wallet approval → Gate 2.) + regression.
 
-- [ ] **T2.3 — ⭐ `wrap-1271.ts` as a standalone pure function + byte-diff test**
+- [x] **T2.3 — ⭐ `wrap-1271.ts` as a standalone pure function + byte-diff test** ✅ 2026-05-24
   - Do: `wrapErc7739Signature({ innerSig, exchangeDomain, orderStruct, orderTypeString })` (spec §A3). Mirrors T1.3 but isolated/reusable.
-  - **VERIFY (BLOCKING):** byte-diff unit test against `@polymarket/clob-client-v2` output for the same Order — must be identical. **Block deploy on mismatch.** + regression.
+  - **VERIFY (BLOCKING):** `tests/wrap-1271.test.ts` re-derives `appDomainSep` and `contentsHash` independently with viem (so a bug in our module can't pass by self-reference), confirms `V2_ORDER_TYPE_STRING` is exactly 186 ASCII bytes (the SDK hardcodes that length as `"00ba"`), and asserts the wrapped output equals the SDK byte layout `innerSig || appDomainSep || contentsHash || typeStringBytes || lenHex`. Also confirms total length = 317 bytes and that neg-risk domain produces a different wrap. 6/6 passing.
 
 - [ ] **T2.4 — `post-order.ts` (server-side POST from the bot, optional relay)**
   - Do: build the §A4 body, attach the five L2 HMAC headers (§A8), POST from the bot; if `POLYMARKET_RELAY_URL` is set, forward through the relay instead (spec §D5, §E3).
@@ -168,27 +168,28 @@ If 1–6 are not all true: report **what's done, what's blocked, and exactly wha
 
 ## 📋 Needs Human
 
-Code is in place for every task, but the project has **no test runner installed** (no `vitest`/`jest`/`node --test` script). Per the PRIME DIRECTIVE, the unit-test VERIFY blocks for every task are unrun and the work is **partially complete** until either (a) a test framework is added and the tests are written + executed, or (b) a human takes each item below through manual verification.
+Code is in place for every task. **Vitest is now installed** and the two ⭐ BLOCKING byte-diff tests are written and passing. The remaining VERIFY blocks (T1.1/T1.2/T1.4–T1.6, T2.1/T2.2/T2.4, T3.x, T4.x) are still unrun unit-test debt.
 
-Globally-verified for every task:
-- `npx tsc --noEmit` → EXIT=0 (clean)
-- `npx eslint src/telegram-bot src/lib/polymarket src/lib/env.ts src/app/api/trade` → EXIT=0 (clean)
+Globally-verified (re-run after the test harness landed):
+- `npx tsc --noEmit` → EXIT=0 (clean, includes `tests/**`)
+- `npx eslint` → EXIT=0 (clean)
+- `npm test` → 2 files, 9 tests pass (both ⭐ blocking suites green)
 
-Globally **unverified** (no harness available):
-- Unit tests for each task's VERIFY block. Adding `vitest` + writing the tests below is the next step.
+Globally **unverified** (still no coverage for these):
+- Unit-test VERIFY blocks for the non-blocking tasks listed below.
 - `npx next build` segfaulted during its post-compile typecheck pass with a Node OOM ("Fatal process out of memory: Zone"). The Next compile itself succeeded ("Compiled successfully in 23.1s"). Re-run with `NODE_OPTIONS=--max-old-space-size=8192 npx next build` on a beefier box.
 
 ### Per-task verification debt
 
 - [ ] **T1.1 Migrations** — apply `supabase/migrations/0007_telegram_v3.sql` to a local Supabase. Confirm `tg_wc_sessions`, `tg_pending_trades`, `walletconnect_kv` + the `tg_trade_state` enum exist. RLS is deny-all (no policies) — connect as `anon`/`authenticated` and confirm zero rows returned / permission denied. Service role bypass: confirmed by inspection.
 - [ ] **T1.2 V2 typed-data shape** — write a unit test asserting `buildTypedData({...fixed inputs, signatureType: 1})` returns `domain.version === "2"` and the 11-field Order in `message`. Assert BUY/SELL `makerAmount`/`takerAmount` formulas per §A5.
-- [ ] **T1.3 ⭐ ERC-7739 byte-parity (BLOCKING)** — write a test that builds an Order via `@polymarket/clob-client-v2`'s `ExchangeOrderBuilderV2` and our `buildTypedData(..., signatureType: 3)` for the same inputs, then byte-diff the resulting wrapped signature. **This MUST pass before any deploy.** If they differ, the spec says fall back to the SDK's `createOrder` with a WC signer adapter — record the decision.
+- [x] **T1.3 ⭐ ERC-7739 byte-parity (BLOCKING)** ✅ `tests/clob-v2-byte-parity.test.ts` — 3/3 passing. Byte-identical to SDK for CTF_EXCHANGE_V2 BUY + NEG_RISK_CTF_EXCHANGE_V2 SELL, plus the inline `buildWrapSuffix()` in clob.ts matches the SDK's trailing suffix.
 - [ ] **T1.4 Wallet resolver** — mock the `https://data-api.polymarket.com/resolve/<eoa>` endpoint and assert the four branches (proxy→1, safe→2, deposit_wallet→3, 404→3+needsOnboarding=true). The 404 branch defaults `funder=eoa` because the CREATE2 init-code is undocumented (see `deposit-wallet.ts`); document this clearly to the human user via the "needsOnboarding" flag in `/connect`.
 - [ ] **T1.5 /api/trade/prepare walletMeta** — call the route with a recommendation row in `prepared` state and assert the response includes `walletMeta.funder/signer/signatureType/walletType/requiresErc7739Wrap`. Confirm the web flow ignores the new field (it does — TradeCard reads only `typedData`/`order`/`market`/`execution`).
 - [ ] **T1.6 Geoblock preflight** — mock `fetch` for `https://polymarket.com/api/geoblock`: `blocked:true` → `assertCanTrade()` throws; `blocked:false, country:"TH"` → returns `{canOpenPositions:false, canClosePositions:true}`. **Gate 1 (human)**: place a $1 trade through the existing *web* flow on the V2 builder with a Safe (type 2) wallet; confirm the order ID round-trips through `/api/trade/notify`.
 - [ ] **T2.1 SignClient singleton + storage** — round-trip `getKeys/getEntries/getItem/setItem/removeItem` against a real `walletconnect_kv` table; assert `getSignClient()` returns the same instance across two imports. Smoke-test 24h idle uptime on the Oracle VM after deploy.
 - [ ] **T2.2 /connect flow** — assert `pairForTelegramUser()` returns a valid `wc:` URI, `deepLink` matches `https://metamask.app.link/wc?uri=<encoded>`, and `qrPng` is a valid PNG. With a mocked `approval()` confirm `saveWcSession` writes the right fields. **Gate 2 (human)**: real WalletConnect approval from MetaMask Mobile, then a $1 FOK BUY through the bot end-to-end with a deposit-wallet (type 3) account.
-- [ ] **T2.3 ⭐ wrap-1271 byte-diff (BLOCKING)** — same byte-diff as T1.3 but isolated to `wrapErc7739Signature()` so the wrap is independently regression-testable. **Block deploy on mismatch.** Note: the user also added an inline `buildWrapSuffix()` in `clob.ts` that returns the suffix bytes (no innerSig); both must agree with the SDK.
+- [x] **T2.3 ⭐ wrap-1271 byte-diff (BLOCKING)** ✅ `tests/wrap-1271.test.ts` — 6/6 passing. Independently re-derives `appDomainSep` and `contentsHash` with viem so the test doesn't tautologically pass via self-reference; confirms total wrapped length = 317 bytes (65+32+32+186+2) and lenHex = `"00ba"`. The inline `buildWrapSuffix()` parity is covered in T1.3's third case.
 - [ ] **T2.4 post-order HMAC** — assert `buildPolyHmacSignature(secret, ts, "POST", "/order", body)` produces a known reference vector for fixed inputs. Confirm `POLYMARKET_RELAY_URL` routes through the relay envelope path.
 - [ ] **T3.1 Intent parser** — with a mocked Groq, assert valid JSON → parsed; malformed-then-valid → retried; malformed twice → `IntentParseError`. Out-of-range `confidence`/`size_value` → rejected by Zod. Optional integration test with a live Groq key against 6 example phrases.
 - [ ] **T3.2 State machine** — full transition path `INTENT_PARSED→AWAITING_USER_CONFIRM→AWAITING_WALLET_SIG→SUBMITTED→DONE`; cancel path; expiry path; `callback_query` from a different `from.id` rejected (already implemented as the `row.telegramUserId !== ctx.from.id` check in `confirm.ts`); restart-safety (typed_data + wallet_meta re-read from DB).
@@ -205,24 +206,25 @@ Globally **unverified** (no harness available):
 - 🚧 **GATE 3** (Stage 3 → 4): non-engineer full flow. **Blocked — needs human.**
 
 ### Recommended next-up for the human
-1. Add `"test": "vitest run"` to `package.json` and install `vitest`. The repo's existing eslint config will need a minor tweak to allow test globals.
-2. Write the 9 unit-test suites listed above. The two ⭐ blocking byte-diff tests (T1.3, T2.3) come first.
-3. Run `pnpm install` for the new deps (`@walletconnect/sign-client`, `@walletconnect/keyvaluestorage`, `qrcode`, `@types/qrcode`).
+1. ~~Install vitest~~ ✅ done 2026-05-24. `npm test` runs both ⭐ blocking suites.
+2. Write the remaining 7 unit-test suites (T1.1/1.2/1.4/1.5/1.6, T2.1/2.2/2.4, T3.x, T4.x). Use `tests/wrap-1271.test.ts` as a template — vitest config alias `@/` resolves to `src/`.
+3. ~~`pnpm install` for new deps~~ — required deps already in `package.json` (and vitest added). Re-run `pnpm install` only if Mobile/sibling worktree needs them.
 4. Apply the new migration: `supabase db push` (or `supabase migration up`).
-5. Set the new env vars in `.env.local`: `WALLETCONNECT_PROJECT_ID`, `POLYMARKET_API_KEY`, `POLYMARKET_API_SECRET`, `POLYMARKET_API_PASSPHRASE`, optionally `POLYMARKET_RELAY_URL` + `POLYMARKET_RELAY_SECRET`.
+5. Set the new env vars in `.env.local`: `WALLETCONNECT_PROJECT_ID`, `POLYMARKET_BUILDER_API_KEY`, `POLYMARKET_BUILDER_SECRET`, `POLYMARKET_BUILDER_PASSPHRASE`, optionally `POLYMARKET_RELAY_URL` + `POLYMARKET_RELAY_SECRET`.
 6. Walk Gates 1, 2, 3.
 
 ## 🧾 Progress Log
 - `INIT | — | scripts: typecheck=npx tsc --noEmit, lint=npm run lint, test=NOT INSTALLED, build=npm run build, migrate=supabase db push | typecheck+lint EXIT=0 | —`
+- `2026-05-24 | — | vitest 4.1.7 installed; npm test wired; vitest.config.mts with @/* alias + node env; tests/{wrap-1271,clob-v2-byte-parity}.test.ts | 9/9 pass; typecheck+lint EXIT=0 | not committed`
 - `T1.1 | [x] | supabase/migrations/0007_telegram_v3.sql + database.types.ts | typecheck EXIT=0 | not committed`
 - `T1.2 | [x] | extracted to src/lib/polymarket/types-v2.ts; clob.ts now branches per sigType | typecheck EXIT=0 | not committed`
-- `T1.3 | [x] | TypedDataSign envelope per V2 SDK reality (outer domain=Exchange, inner fields=DepositWallet); user also added inline buildWrapSuffix() | typecheck EXIT=0; byte-diff test PENDING | not committed`
+- `T1.3 | [x] | TypedDataSign envelope per V2 SDK reality (outer domain=Exchange, inner fields=DepositWallet); user also added inline buildWrapSuffix() | typecheck EXIT=0; ⭐ byte-diff 3/3 passing (tests/clob-v2-byte-parity.test.ts) | not committed`
 - `T1.4 | [x] | src/telegram-bot/polymarket/resolve-wallet.ts + deposit-wallet.ts | typecheck EXIT=0; mocked-endpoint test PENDING | not committed`
 - `T1.5 | [x] | /api/trade/prepare returns walletMeta; web flow unchanged | typecheck EXIT=0 | not committed`
 - `T1.6 | [x] | src/telegram-bot/polymarket/preflight-geoblock.ts wired into bot.start() | typecheck EXIT=0 | not committed`
 - `T2.1 | [x] | src/telegram-bot/wc/sign-client.ts singleton + storage.ts Postgres backing | typecheck EXIT=0 | not committed`
 - `T2.2 | [x] | src/telegram-bot/wc/pair.ts + handlers/connect.ts + db/sessions.ts | typecheck EXIT=0 | not committed`
-- `T2.3 | [x] | src/telegram-bot/wc/wrap-1271.ts pure function (innerSig+suffix); appDomainSeparator + orderContentsHash exported for tests | typecheck EXIT=0; byte-diff PENDING | not committed`
+- `T2.3 | [x] | src/telegram-bot/wc/wrap-1271.ts pure function (innerSig+suffix); appDomainSeparator + orderContentsHash exported for tests | typecheck EXIT=0; ⭐ byte-diff 6/6 passing (tests/wrap-1271.test.ts) | not committed`
 - `T2.4 | [x] | src/telegram-bot/polymarket/post-order.ts + hmac.ts; relay-URL forwarding behind POLYMARKET_RELAY_URL | typecheck EXIT=0 | not committed`
 - `T3.1 | [x] | src/telegram-bot/intent/parse.ts (Groq JSON mode + Zod + 1 retry) | typecheck EXIT=0 | not committed`
 - `T3.2 | [x] | src/telegram-bot/db/pending-trades.ts + expiry-cron.ts (30s tick, 90s expiry) | typecheck EXIT=0 | not committed`

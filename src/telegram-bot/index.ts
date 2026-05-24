@@ -22,6 +22,34 @@ import { startExpiryCron } from './expiry-cron';
 import { deleteWcSessionByTopic } from './db/sessions';
 import { createAdminClient } from '../lib/supabase/admin';
 
+// Node's default unhandled-rejection printer renders non-Error rejections as
+// `#<Object>` and swallows their content. WalletConnect internals + Supabase
+// REST errors both reject with plain objects, so we install a richer printer.
+// Log-only — the WC SDK throws stale-topic rejections in the background as
+// part of normal operation (wallet emits `chainChanged` for a session the
+// bot doesn't know about), and killing the bot for those would make `/connect`
+// effectively un-retriable.
+process.on('unhandledRejection', (reason) => {
+  let serialized: string;
+  try {
+    serialized =
+      reason instanceof Error
+        ? (reason.stack ?? reason.message)
+        : JSON.stringify(reason, Object.getOwnPropertyNames(reason ?? {}), 2);
+  } catch {
+    serialized = String(reason);
+  }
+  // "No matching key. session topic doesn't exist" is fired by the WC SDK
+  // when the wallet emits an event for a session our SignClient never stored
+  // (most often: stale pairing left in the wallet from a prior /connect).
+  // The SDK already handles this gracefully internally; we just don't want
+  // the noise filling stderr.
+  if (/No matching key\. session topic doesn't exist/.test(serialized)) {
+    return;
+  }
+  console.error('[telegram-bot] unhandledRejection:\n' + serialized);
+});
+
 async function main(): Promise<void> {
   const bot = new Bot(env.TELEGRAM_BOT_TOKEN);
 
