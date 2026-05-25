@@ -449,8 +449,31 @@ function buildWrapSuffix(
  *   - `order`: the wire-body order (string side, includes taker + expiration)
  *     for the browser to merge the signature into and POST.
  */
+// Order attribution builder code (bytes32) stamped on every V2 order's
+// `builder` field. Prefers the public NEXT_PUBLIC name (set on Vercel for the
+// browser SDK path); falls back to the server-only POLYMARKET_BUILDER_CODE the
+// bot worker's .env.local provides. Returns the zero bytes32 (no attribution)
+// when unset or malformed — a misconfigured code must never break order
+// signing.
+const BYTES32_HEX_RE = /^0x[0-9a-fA-F]{64}$/;
+function orderBuilderCode(): string {
+  const raw =
+    process.env.NEXT_PUBLIC_POLYMARKET_BUILDER_CODE ||
+    process.env.POLYMARKET_BUILDER_CODE ||
+    '';
+  if (!raw) return BYTES32_ZERO;
+  if (!BYTES32_HEX_RE.test(raw)) {
+    console.warn(
+      '[clob] builder code is not bytes32 hex; submitting without attribution',
+    );
+    return BYTES32_ZERO;
+  }
+  return raw;
+}
+
 export async function buildTypedData(args: BuildTypedDataArgs): Promise<PreparedOrder> {
   const cfg = ROUNDING_CONFIG[args.tickSize];
+  const builderCode = orderBuilderCode();
   const orderType: OrderTypeArg = args.orderType ?? 'GTC';
   const isMarket = orderType === 'FAK' || orderType === 'FOK';
   const { rawMakerAmt, rawTakerAmt } = isMarket
@@ -483,7 +506,7 @@ export async function buildTypedData(args: BuildTypedDataArgs): Promise<Prepared
     side: sideNumeric,
     signatureType: args.signatureType,
     metadata: BYTES32_ZERO,
-    builder: BYTES32_ZERO,
+    builder: builderCode,
   };
 
   let typedData: V2TypedData;
@@ -546,7 +569,7 @@ export async function buildTypedData(args: BuildTypedDataArgs): Promise<Prepared
     timestamp,
     expiration,
     metadata: BYTES32_ZERO,
-    builder: BYTES32_ZERO,
+    builder: builderCode,
   };
 
   const wrapSuffix =
