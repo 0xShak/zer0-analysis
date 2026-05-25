@@ -33,6 +33,10 @@ yarn-error.log*
 # env files (can opt-in for committing if needed)
 .env*
 
+# claude code local settings (machine-specific; can capture secrets in
+# permission allow-rules — keep out of version control)
+.claude/settings.local.json
+
 # vercel
 .vercel
 

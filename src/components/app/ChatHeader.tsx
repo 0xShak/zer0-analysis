@@ -1,6 +1,7 @@
 'use client';
 
 import Image from 'next/image';
+import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { ThoughtsBubble } from './ThoughtsBubble';
@@ -69,6 +70,12 @@ export function ChatHeader({
       </div>
 
       <div className="flex items-center gap-2">
+        <Link
+          href="/app/stats"
+          className="hidden rounded-lg border border-white/10 bg-white/[0.03] px-3 py-1.5 text-xs text-zinc-300 transition hover:border-white/20 hover:bg-white/[0.06] sm:inline-flex"
+        >
+          track record
+        </Link>
         <ThoughtsBubble />
         <TradesBubble userAddress={walletAddress} />
         <RecentTradesBubble userAddress={walletAddress} />
