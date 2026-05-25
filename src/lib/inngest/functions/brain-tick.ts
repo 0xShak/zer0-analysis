@@ -159,10 +159,16 @@ export const brainTick = inngest.createFunction(
 
     const classified = await step.run('classify', async () => {
       const groq = getGroq();
-      // Classify breadth = 10. Combined with the cache lookup below, most
-      // ticks fire 0-3 Groq classifier calls (only for genuinely new
-      // markets). Stays well within Groq free tier's 500k TPD budget.
-      const targets = fresh.slice(0, 10);
+      // Classify breadth = 30 (override via CLASSIFY_BREADTH). The 24h cache
+      // lookup below means only genuinely-new markets cost a Groq call, so the
+      // per-day classify volume tracks new-market count (realistically
+      // <200/day) — well within Groq free tier's 500k TPD budget; CONCURRENCY
+      // already batches the calls. Wider breadth matters because persist-scans
+      // refreshes last_seen_at only for the markets classified here, and the
+      // chat is grounded on deterministic markets seen in the last 24h — so a
+      // bigger slice keeps far more markets inside the chat's window.
+      const CLASSIFY_BREADTH = parseInt(process.env.CLASSIFY_BREADTH ?? '30', 10);
+      const targets = fresh.slice(0, CLASSIFY_BREADTH);
       const CONCURRENCY = 5;
       const CACHE_TTL_HOURS = 24;
       const now = Date.now();

@@ -46,7 +46,7 @@ export type ChatContext = {
 //  - history: last 20 messages tied to either user_id or session_id.
 //  - trades: up to 10 still-open recommendations.
 //  - recentMarkets: last 24h of deterministic markets ZER0 has at least
-//    classified (top 15) — includes both deep-analyzed markets AND
+//    classified (top RECENT_MARKETS_LIMIT) — includes both deep-analyzed AND
 //    classified-but-not-yet-deep-analyzed ones, so the chat can talk about
 //    crypto/policy/election markets ZER0 has seen even before the brain
 //    forms a deep view. last_analyzed_yes_price may be NULL for the latter.
@@ -75,6 +75,12 @@ export async function loadChatContext(
   const nowIso = new Date().toISOString();
   const since24hIso = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
 
+  // How many recently-seen deterministic markets the chat may reference. This
+  // is the real ceiling on chat breadth — brain-tick's classify step feeds
+  // market_scans, but the model only ever sees this many. Kept in sync with
+  // brain-tick's CLASSIFY_BREADTH so a wider scan actually reaches the prompt.
+  const RECENT_MARKETS_LIMIT = 40;
+
   const [historyRes, tradesRes, recentMarketsRes, recentThoughtsRes, persona] =
     await Promise.all([
       historyQuery,
@@ -93,7 +99,7 @@ export async function loadChatContext(
         .eq('deterministic', true)
         .gte('last_seen_at', since24hIso)
         .order('last_seen_at', { ascending: false })
-        .limit(15),
+        .limit(RECENT_MARKETS_LIMIT),
       supabase
         .from('thoughts')
         .select('content, market_condition_id, created_at')
