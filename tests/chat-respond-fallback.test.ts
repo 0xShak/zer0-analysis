@@ -118,8 +118,8 @@ describe('outbound deliver() empty-text guard', () => {
     const { client } = supabaseStub();
     const { bot, sent } = botStub();
 
-    await deliver(bot as never, row(''), client);
-    await deliver(bot as never, row('   '), client);
+    await deliver(bot as never, client, row(''), new Set());
+    await deliver(bot as never, client, row('   '), new Set());
 
     expect(bot.api.sendMessage).toHaveBeenCalledTimes(2);
     for (const call of sent) {
@@ -133,7 +133,7 @@ describe('outbound deliver() empty-text guard', () => {
     const { client } = supabaseStub();
     const { bot, sent } = botStub();
 
-    await deliver(bot as never, row('BTC is heating up.'), client);
+    await deliver(bot as never, client, row('BTC is heating up.'), new Set());
 
     expect(sent).toHaveLength(1);
     expect(sent[0].text).toBe('BTC is heating up.');
