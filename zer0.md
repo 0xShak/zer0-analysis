@@ -2,7 +2,7 @@
 
 ## TL;DR
 - **Use Vercel + Inngest + Groq + Supabase + Oracle Cloud Free Tier ARM VM together — they are complementary, not competitors.** Vercel hosts the Next.js frontend and serverless API routes. Inngest runs the durable, retryable scheduled brain loop (Hobby tier: 50,000 executions/month included, per inngest.com/pricing — an execution is "a single durable function run or step execution"). Groq is the fast LLM inference layer. Supabase Free is the shared Postgres + Realtime bus (per Supabase's official pricing page: 2 active projects, 500 MB database storage, 50,000 monthly active users for authentication, 200 concurrent realtime connections, and 2 million realtime messages per month with 256 KB max message size). The Oracle Cloud ARM box (VM.Standard.A1.Flex, 4 OCPU / 24 GB RAM, free forever) is the only always-on piece — it runs the Polymarket WebSocket subscriber and the Telegram bot, both of which need persistent sockets that serverless cannot hold.
-- **Do NOT fork NanoClaw as-is** — it is a single-user, container-per-conversation product. Build a thin custom agent loop on top of the official Claude Agent SDK using the new June 15, 2026 Agent SDK monthly credit ($20 Pro / $100 Max 5x / $200 Max 20x, non-pooled, refreshes monthly, billed at API rates beyond credit) for the deep-reasoning brain, plus Groq Llama 3.3 70B for chat. Subscription OAuth tokens cannot legally be used by third-party agents — the credit is the sanctioned path.
+- **Do NOT fork NanoClaw as-is** — it is a single-user, container-per-conversation product. Build a thin custom agent loop on top of the official Claude Agent SDK using the new June 15, 2026 Agent SDK monthly credit ($20 Pro / $100 Max 5x / $200 Max 20x, non-pooled, refreshes monthly, billed at API rates beyond credit) for the deep-reasoning brain, plus Groq Llama 3.1 8B for chat. Subscription OAuth tokens cannot legally be used by third-party agents — the credit is the sanctioned path.
 - **MVP runs at $0/month** up to roughly 500 daily active users. First cost walls: Groq Developer tier (still $0, credit card unlocks ~10× rate limits) when chat exceeds 30 RPM, or Inngest's 50,000-executions-per-month cap if the agent loop runs more often than every ~60 seconds. Custody risk is zero — users sign EIP-712 orders client-side; ZER0 never holds funds. Soft paywall: one-time $5 USDC unlocks 30 days, tracked in Supabase entitlements table, triggered after 5 anonymous messages/day via session-cookie + IP-fingerprint composite.
 
 ---
@@ -44,7 +44,7 @@
             ▼                              ▼
 ┌──────────────────────────────────────────────────────────────────────────┐
 │  EDGE / HTTP LAYER  (Vercel — Hobby free, 100 GB-hours/mo)                │
-│  /api/chat              → Groq Llama 3.3 70B + Supabase memory            │
+│  /api/chat              → Groq Llama 3.1 8B + Supabase memory             │
 │  /api/checkout          → Coinbase Commerce Charge.create                 │
 │  /api/coinbase-webhook  → Verify HMAC, flip entitlements row              │
 │  /api/inngest           → Inngest function endpoint                       │
@@ -527,7 +527,7 @@ Two-tier:
 - **Deliverable**: 3–10 trade recommendations/day visible.
 
 **Day 3 — Web chat**
-- Implement `/api/chat` with Groq Llama 3.3 70B streaming.
+- Implement `/api/chat` with Groq Llama 3.1 8B streaming.
 - Memory loader (last 20).
 - Rate limiter at 5/day.
 - **Deliverable**: web chat works, remembers history.

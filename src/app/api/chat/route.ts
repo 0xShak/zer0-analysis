@@ -176,7 +176,9 @@ Recent conversation memory follows. Respond as ZER0 — knowledgeable about Poly
     const stream = await groq.chat.completions.create({
       model: GROQ_MODELS.CHAT,
       temperature: 0.4,
-      max_tokens: 1500,
+      // 800 (was 1500) — counts against Groq's free-tier per-minute token
+      // ceiling, shared with the Telegram chat path. See lib/groq.ts.
+      max_tokens: 800,
       stream: true,
       messages: [
         { role: 'system', content: systemPrompt },
