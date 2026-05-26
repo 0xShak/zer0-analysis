@@ -65,4 +65,17 @@ export const env = {
   // can stamp orders without a round-trip.
   NEXT_PUBLIC_POLYMARKET_BUILDER_CODE:
     process.env.NEXT_PUBLIC_POLYMARKET_BUILDER_CODE ?? '',
+
+  // ---- X (Twitter) auto-posting (lib/x + x-broadcast Inngest fn) ----
+  // Master switch. When not 'true', the x-broadcast function no-ops, so this
+  // code can ship before credentials are wired without crashing any ticks.
+  X_POSTING_ENABLED: process.env.X_POSTING_ENABLED ?? 'false',
+  // OAuth 1.0a user-context credentials. API key/secret are @0xAhrii's app
+  // (the X Developer account that holds the Pay-Per-Use project); the access
+  // token/secret are @atzer0_BOT's per-user tokens — the persona the tweets
+  // appear under. Do NOT use the app owner's own access tokens here.
+  get X_API_KEY() { return need('X_API_KEY'); },
+  get X_API_SECRET() { return need('X_API_SECRET'); },
+  get X_ACCESS_TOKEN() { return need('X_ACCESS_TOKEN'); },
+  get X_ACCESS_TOKEN_SECRET() { return need('X_ACCESS_TOKEN_SECRET'); },
 };
