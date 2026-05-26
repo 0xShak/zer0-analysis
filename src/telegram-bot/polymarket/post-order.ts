@@ -33,6 +33,15 @@ export interface PostOrderArgs {
   orderType: OrderTypeWire;
   /** Polymarket CLOB API key UUID (the L2 creds the bot caches per EOA). */
   creds: ApiCreds;
+  /**
+   * The address the L2 POLY_ADDRESS header must carry: the api-key's bound
+   * owner (the connecting EOA). This is NOT necessarily order.signer — for a
+   * sigType-3 deposit wallet, order.signer is the contract while the api-key
+   * (and POLY_ADDRESS) belong to the EOA that owns it. The official SDK sends
+   * getSignerAddress(signer) = the EOA here for every sig type. Falls back to
+   * order.signer only when omitted (correct for sigType 1/2 where they match).
+   */
+  polyAddress?: string;
   /** Defer execution flag — almost always false for chat-driven trades. */
   deferExec?: boolean;
   fetchImpl?: typeof fetch;
@@ -56,9 +65,32 @@ export interface PostOrderResponse {
  * POST, so we stringify here once and reuse.
  */
 function buildWireBody(args: PostOrderArgs): string {
+  // Must mirror @polymarket/clob-client-v2's `orderToJsonV2`
+  // (node_modules/@polymarket/clob-client-v2/dist/types/ordersV2.js) EXACTLY —
+  // the CLOB rejects anything else with a generic 400 "Invalid order payload".
+  // Two things the previous hand-built body got wrong:
+  //   1. `salt` must be a NUMBER (parseInt), not the string we sign/store.
+  //   2. the body must include `postOnly`.
+  const o = args.order;
   const body = {
     deferExec: args.deferExec ?? false,
-    order: args.order,
+    postOnly: false,
+    order: {
+      salt: parseInt(o.salt, 10),
+      maker: o.maker,
+      signer: o.signer,
+      taker: o.taker,
+      tokenId: o.tokenId,
+      makerAmount: o.makerAmount,
+      takerAmount: o.takerAmount,
+      side: o.side,
+      signatureType: o.signatureType,
+      timestamp: o.timestamp,
+      expiration: o.expiration,
+      metadata: o.metadata,
+      builder: o.builder,
+      signature: o.signature,
+    },
     owner: args.creds.apiKey,
     orderType: args.orderType,
   };
@@ -86,7 +118,7 @@ export async function postOrder(args: PostOrderArgs): Promise<PostOrderResponse>
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
-    POLY_ADDRESS: args.order.signer,
+    POLY_ADDRESS: args.polyAddress ?? args.order.signer,
     POLY_SIGNATURE: polySig,
     POLY_TIMESTAMP: timestampSec,
     POLY_API_KEY: args.creds.apiKey,
@@ -105,12 +137,23 @@ export async function postOrder(args: PostOrderArgs): Promise<PostOrderResponse>
     });
   }
 
+  console.error('[post-order DEBUG] POST', `${HOST}${PATH}`);
+  console.error('[post-order DEBUG] headers', {
+    'Content-Type': headers['Content-Type'],
+    POLY_ADDRESS: headers.POLY_ADDRESS,
+    POLY_TIMESTAMP: headers.POLY_TIMESTAMP,
+    POLY_API_KEY_len: headers.POLY_API_KEY?.length ?? 0,
+    POLY_SIGNATURE_len: headers.POLY_SIGNATURE?.length ?? 0,
+    POLY_PASSPHRASE_len: headers.POLY_PASSPHRASE?.length ?? 0,
+  });
+  console.error('[post-order DEBUG] body', body);
   const res = await fetchImpl(`${HOST}${PATH}`, {
     method: 'POST',
     headers,
     body,
   });
   const text = await res.text();
+  console.error('[post-order DEBUG] response', res.status, text);
   if (!res.ok) {
     let parsed: PostOrderResponse | null = null;
     try {

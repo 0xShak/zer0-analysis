@@ -26,7 +26,7 @@ import { requestEip712Sig } from '../wc/sign';
 import { wrapErc7739Signature } from '../wc/wrap-1271';
 import { postOrder, PostOrderError } from '../polymarket/post-order';
 import { exchangeDomainFor } from '../../lib/polymarket/types-v2';
-import { getApiCredsForEoa } from '../polymarket/api-creds';
+import { getApiCredsForUser } from '../polymarket/api-creds';
 
 interface CallbackData {
   action: 'confirm' | 'cancel';
@@ -175,9 +175,9 @@ export async function handleTradeCallback(ctx: Context): Promise<void> {
     builder: string;
   };
 
-  let creds;
+  let resolvedCreds;
   try {
-    creds = await getApiCredsForEoa(meta.eoa);
+    resolvedCreds = await getApiCredsForUser(supabase, row.telegramUserId);
   } catch (err) {
     console.error('[telegram-bot] api-creds lookup failed', err);
     await updatePendingTrade(supabase, row.id, { state: 'CANCELLED' });
@@ -210,7 +210,11 @@ export async function handleTradeCallback(ctx: Context): Promise<void> {
         signature,
       },
       orderType: 'FOK',
-      creds,
+      creds: resolvedCreds.creds,
+      // POLY_ADDRESS = the api-key owner (the EOA), NOT order.signer. For a
+      // sigType-3 deposit wallet, order.signer is the contract while the key
+      // belongs to the EOA — the SDK sends the EOA here for every sig type.
+      polyAddress: resolvedCreds.polyAddress,
     });
     await updatePendingTrade(supabase, row.id, { state: 'DONE' });
     const orderId = resp.orderID ?? '(no id)';

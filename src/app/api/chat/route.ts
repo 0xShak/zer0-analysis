@@ -13,6 +13,7 @@ import { getGroq, GROQ_MODELS } from '@/lib/groq';
 import { logUsage } from '@/lib/cost/log';
 import { computeCost } from '@/lib/cost/openai-pricing';
 import { hasActiveEntitlement } from '@/lib/rate-limit';
+import { CHAT_FALLBACK_MESSAGE } from '@/lib/inngest/functions/chat-respond';
 
 // Node runtime — we need crypto (already implied by streaming + supabase
 // service-role client) and a long-lived ReadableStream which is awkward on
@@ -173,16 +174,51 @@ Recent conversation memory follows. Respond as ZER0 — knowledgeable about Poly
 
     // ---- Groq streaming ----
     const groq = getGroq();
-    const stream = await groq.chat.completions.create({
-      model: GROQ_MODELS.CHAT,
-      temperature: 0.4,
-      max_tokens: 1500,
-      stream: true,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        ...context.messages.map((m) => ({ role: m.role, content: m.content })),
-      ],
-    });
+    let stream;
+    try {
+      stream = await groq.chat.completions.create({
+        model: GROQ_MODELS.CHAT,
+        temperature: 0.4,
+        max_tokens: 1500,
+        stream: true,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          ...context.messages.map((m) => ({ role: m.role, content: m.content })),
+        ],
+      });
+    } catch (err) {
+      // Groq throws HERE, before the SSE response is opened — most commonly a
+      // 429 when the shared free-tier key exhausts its daily token quota (the
+      // same contention that degrades the Telegram bot to its fallback). That
+      // is infra contention, not a server bug: surface it as a graceful
+      // "busy, try again" with the same fallback copy the bot uses, rather
+      // than the scary catch-all 500. groq-sdk APIError carries `.status`.
+      // See chat-stuck-typing.md.
+      const status = (err as { status?: number })?.status;
+      console.error('[chat] groq stream-create error', {
+        model: GROQ_MODELS.CHAT,
+        errorName: (err as Error)?.name,
+        errorStatus: status,
+      });
+      if (status === 429 || status === 503) {
+        const retryAfter =
+          (err as { headers?: Record<string, string> })?.headers?.[
+            'retry-after'
+          ] ?? '30';
+        return Response.json(
+          { error: 'busy', message: CHAT_FALLBACK_MESSAGE, retry: true },
+          {
+            status: 503,
+            headers: {
+              'set-cookie': setCookieHeader,
+              'retry-after': retryAfter,
+            },
+          },
+        );
+      }
+      // Anything unexpected → fall through to the catch-all 500 below.
+      throw err;
+    }
 
     const encoder = new TextEncoder();
     // Capture in locals so the closure inside ReadableStream doesn't
@@ -213,10 +249,17 @@ Recent conversation memory follows. Respond as ZER0 — knowledgeable about Poly
           }
           controller.enqueue(encoder.encode('data: [DONE]\n\n'));
         } catch (err) {
+          // Groq died mid-stream (after the SSE response was already opened,
+          // so we can't change the status code). Emit a friendly message
+          // alongside the error code so the client can render the same
+          // fallback copy instead of a blank/broken bubble.
           console.error('[chat] groq stream error', err);
           controller.enqueue(
             encoder.encode(
-              `data: ${JSON.stringify({ error: 'stream_failed' })}\n\n`,
+              `data: ${JSON.stringify({
+                error: 'stream_failed',
+                message: CHAT_FALLBACK_MESSAGE,
+              })}\n\n`,
             ),
           );
         } finally {

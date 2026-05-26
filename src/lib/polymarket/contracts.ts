@@ -42,6 +42,14 @@ export const CONDITIONAL_TOKENS = '0x4D97DCd97eC945f40cF65F87097ACe5EA0476045';
 export const DEPOSIT_WALLET_FACTORY = '0x00000000000Fb5C9ADea0298D729A0CB3823Cc07';
 export const DEPOSIT_WALLET_IMPLEMENTATION = '0x58CA52ebe0DadfdF531Cde7062e76746de4Db1eB';
 
+// Legacy POLY_PROXY factory (sigType 1) and POLY_GNOSIS_SAFE factory
+// (sigType 2) on Polygon. Web3-wallet (MetaMask) users who onboarded via
+// polymarket.com hold their pUSD in a CREATE2-derived proxy/safe from these.
+// Sourced from `@polymarket/builder-relayer-client/dist/config/index.js`
+// (POL.ProxyContracts.ProxyFactory / SafeFactory).
+export const POLYMARKET_PROXY_FACTORY = '0xaB45c5A4B0c941a2F231C04C3f49182e1A254052';
+export const POLYMARKET_SAFE_FACTORY = '0xaacFeEa03eb1561C4e67d661e40682Bd20E3541b';
+
 // Polymarket's transaction relayer for builders. Sponsors gas for deposit-
 // wallet deployment + executeBatch.
 export const POLYMARKET_RELAYER_URL = 'https://relayer-v2.polymarket.com/';

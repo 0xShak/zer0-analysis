@@ -56,6 +56,12 @@ export async function handleTradeIntent(
     await ctx.reply("You'll need to connect a wallet first. Send /connect.");
     return;
   }
+  if (session.needsOnboarding) {
+    await ctx.reply(
+      "Your Polymarket wallet isn't provisioned yet. Visit polymarket.com once from the connected wallet (deposit a little USDC), then send /connect again.",
+    );
+    return;
+  }
 
   if (!intent.market_query) {
     await ctx.reply("Which market? Mention it by name and I'll find it.");
@@ -112,23 +118,29 @@ export async function handleTradeIntent(
     return;
   }
 
-  // shares = USD / executionPrice. We pass `size: shares` and `price:
-  // executionPrice` to buildTypedData; the rounding lookup matches the V2
-  // SDK so the contract sees consistent uint256s.
+  // We submit market (FOK) orders — confirm.ts posts orderType:'FOK' — so the
+  // typed-data MUST be built with market rounding too. The matcher enforces
+  // looser per-side precision for market orders (maker ≤2 decimals, taker ≤4)
+  // and rejects the limit-order amounts (4-decimal maker) with "invalid
+  // amounts, the market buy orders maker amount supports a max accuracy of 2
+  // decimals". buildTypedData's market path also expects the V2 SDK size
+  // convention: USD for BUY, shares for SELL.
   const usd = intent.size_value;
   const shares = usd / executionPrice;
+  const orderSize = intent.side === 'BUY' ? usd : shares;
   let prepared;
   try {
     prepared = await buildTypedData({
       tokenId,
       price: executionPrice,
-      size: shares,
+      size: orderSize,
       side: intent.side,
       maker: session.funderAddress,
       signer: session.signatureType === 3 ? session.funderAddress : session.eoaAddress,
       signatureType: session.signatureType,
       tickSize: meta.tickSize,
       negRisk: meta.negRisk,
+      orderType: 'FOK',
     });
   } catch (err) {
     console.error('[telegram-bot] buildTypedData failed', err);

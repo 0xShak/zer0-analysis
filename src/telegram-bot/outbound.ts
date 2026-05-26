@@ -1,9 +1,12 @@
 import type { Bot } from 'grammy';
 import { GrammyError, HttpError } from 'grammy';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Database } from '../lib/database.types';
 import { createAdminClient } from '../lib/supabase/admin';
+import { CHAT_FALLBACK_MESSAGE } from '../lib/inngest/functions/chat-respond';
 
 type OutboundRow = Database['public']['Tables']['outbound_messages']['Row'];
+type AdminClient = SupabaseClient<Database>;
 
 // Subscribe to outbound_messages INSERTs and forward each one to Telegram.
 // Also replays anything stuck in the queue at boot (last 5 minutes), so a
@@ -64,22 +67,33 @@ export function startOutboundListener(bot: Bot): { stop: () => Promise<void> } {
   };
 }
 
-async function deliver(bot: Bot, row: OutboundRow): Promise<void> {
+// Exported (and the supabase client is injectable) so the empty-text guard
+// can be unit-tested without a real admin client. Production callers omit
+// `supabase` and get the lazily-created admin client.
+export async function deliver(
+  bot: Bot,
+  row: OutboundRow,
+  supabase: AdminClient = createAdminClient(),
+): Promise<void> {
   if (!row.telegram_chat_id) {
     console.error('[telegram-bot] outbound row missing telegram_chat_id', {
       id: row.id,
     });
     return;
   }
+  // Never call sendMessage with empty text — Telegram rejects it with 400
+  // "message text is empty", which deliver()'s catch swallows as
+  // "delivered", producing another silent path. Substitute the fallback so
+  // the user always sees something. See #2 in chat-stuck-typing.md.
+  const text = row.content.trim() === '' ? CHAT_FALLBACK_MESSAGE : row.content;
   try {
     // Send as plain text. The spec asks for Markdown but with the strict
     // caveat of escaping user content; ZER0 replies frequently include `$`
     // and dashes that MarkdownV2 considers reserved. Until we have a
     // hardened escape path, plain text is the safer default — Telegram still
     // renders fine and we avoid 400 BAD_REQUEST loops.
-    await bot.api.sendMessage(Number(row.telegram_chat_id), row.content);
+    await bot.api.sendMessage(Number(row.telegram_chat_id), text);
 
-    const supabase = createAdminClient();
     await supabase
       .from('outbound_messages')
       .update({ delivered_at: new Date().toISOString() })
@@ -90,7 +104,6 @@ async function deliver(bot: Bot, row: OutboundRow): Promise<void> {
       // do — mark as delivered so we don't keep replaying.
       console.error('[telegram-bot] grammy error', err.error_code, err.description);
       if (err.error_code === 400 || err.error_code === 403) {
-        const supabase = createAdminClient();
         await supabase
           .from('outbound_messages')
           .update({ delivered_at: new Date().toISOString() })

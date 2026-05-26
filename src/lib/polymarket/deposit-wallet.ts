@@ -25,6 +25,8 @@ import { polygon } from 'viem/chains';
 import {
   RelayClient,
   deriveDepositWallet,
+  deriveProxyWallet,
+  deriveSafe,
   type DepositWalletCall,
 } from '@polymarket/builder-relayer-client';
 import {
@@ -32,7 +34,9 @@ import {
   DEPOSIT_WALLET_FACTORY,
   DEPOSIT_WALLET_IMPLEMENTATION,
   POLYGON_CHAIN_ID,
+  POLYMARKET_PROXY_FACTORY,
   POLYMARKET_RELAYER_URL,
+  POLYMARKET_SAFE_FACTORY,
   PUSD_ADDRESS,
 } from './contracts';
 import { getRelayerBuilderConfig } from './builder-config';
@@ -90,6 +94,23 @@ export function deriveDepositWalletAddress(ownerEoa: string): `0x${string}` {
   ) as `0x${string}`;
 }
 
+/**
+ * Pure CREATE2 derivation of the legacy POLY_PROXY wallet (sigType 1) for an
+ * EOA. This is the trading wallet a web3-wallet (MetaMask) user gets when they
+ * onboard via polymarket.com. No RPC call.
+ */
+export function deriveProxyWalletAddress(eoa: string): `0x${string}` {
+  return deriveProxyWallet(eoa, POLYMARKET_PROXY_FACTORY) as `0x${string}`;
+}
+
+/**
+ * Pure CREATE2 derivation of the POLY_GNOSIS_SAFE wallet (sigType 2) for an
+ * EOA. No RPC call.
+ */
+export function deriveSafeAddress(eoa: string): `0x${string}` {
+  return deriveSafe(eoa, POLYMARKET_SAFE_FACTORY) as `0x${string}`;
+}
+
 // ---- Server-side deployment-status read ----
 
 function rpcUrls(): string[] {
@@ -117,22 +138,31 @@ function clientFor(url: string): PublicClient {
 
 /**
  * Multi-RPC `getCode` probe — returns `true` if there's any contract bytecode
- * deployed at the derived deposit-wallet address. Throws on all-RPCs-failed.
+ * deployed at `address`. Throws on all-RPCs-failed. Used to detect which of a
+ * user's candidate trading wallets (proxy / safe / deposit) actually exists.
  */
-export async function isDepositWalletDeployed(
-  ownerEoa: string,
+export async function isContractDeployed(
+  address: `0x${string}`,
 ): Promise<boolean> {
-  const wallet = deriveDepositWalletAddress(ownerEoa);
   let lastErr: unknown;
   for (const url of rpcUrls()) {
     try {
-      const code = await clientFor(url).getCode({ address: wallet });
+      const code = await clientFor(url).getCode({ address });
       return code !== undefined && code !== '0x';
     } catch (err) {
       lastErr = err;
     }
   }
-  throw lastErr ?? new Error('isDepositWalletDeployed: no RPCs available');
+  throw lastErr ?? new Error('isContractDeployed: no RPCs available');
+}
+
+/**
+ * Convenience wrapper: is the derived deposit wallet for `ownerEoa` deployed?
+ */
+export async function isDepositWalletDeployed(
+  ownerEoa: string,
+): Promise<boolean> {
+  return isContractDeployed(deriveDepositWalletAddress(ownerEoa));
 }
 
 // ---- Browser relayer wrappers ----

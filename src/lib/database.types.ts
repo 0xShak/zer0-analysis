@@ -504,6 +504,7 @@ export type Database = {
           funder_address: string;
           signature_type: number;
           wallet_type: 'eoa' | 'proxy' | 'safe' | 'deposit_wallet';
+          needs_onboarding: boolean;
           expires_at: string;
           created_at: string;
           last_used_at: string;
@@ -515,6 +516,7 @@ export type Database = {
           funder_address: string;
           signature_type: number;
           wallet_type: 'eoa' | 'proxy' | 'safe' | 'deposit_wallet';
+          needs_onboarding?: boolean;
           expires_at: string;
           created_at?: string;
           last_used_at?: string;
@@ -526,6 +528,7 @@ export type Database = {
           funder_address?: string;
           signature_type?: number;
           wallet_type?: 'eoa' | 'proxy' | 'safe' | 'deposit_wallet';
+          needs_onboarding?: boolean;
           expires_at?: string;
           created_at?: string;
           last_used_at?: string;
@@ -593,6 +596,36 @@ export type Database = {
           typed_data?: Json | null;
           wallet_meta?: Json | null;
           expires_at?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      tg_clob_api_creds: {
+        Row: {
+          telegram_user_id: number;
+          signer_address: string;
+          api_key: string;
+          api_secret: string;
+          api_passphrase: string;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          telegram_user_id: number;
+          signer_address: string;
+          api_key: string;
+          api_secret: string;
+          api_passphrase: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          telegram_user_id?: number;
+          signer_address?: string;
+          api_key?: string;
+          api_secret?: string;
+          api_passphrase?: string;
           created_at?: string;
           updated_at?: string;
         };

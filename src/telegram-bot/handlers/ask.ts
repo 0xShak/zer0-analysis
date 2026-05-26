@@ -14,6 +14,7 @@ import type { Context } from 'grammy';
 import { createAdminClient } from '../../lib/supabase/admin';
 import { checkRateLimit } from '../../lib/chat/rate-limit';
 import { inngest, chatMessageReceived } from '../../lib/inngest/client';
+import { CHAT_FALLBACK_MESSAGE } from '../../lib/inngest/functions/chat-respond';
 import {
   getOrCreateTelegramSession,
   upsertTelegramUser,
@@ -104,13 +105,22 @@ export async function handleAskOrTrade(ctx: Context): Promise<void> {
     return;
   }
 
-  // Default — kick to the existing Inngest chat pipeline.
-  await inngest.send(
-    chatMessageReceived.create({
-      sessionId,
-      userId,
-      channel: 'telegram',
-      telegramChatId: ctx.chat.id,
-    }),
-  );
+  // Default — kick to the existing Inngest chat pipeline. The reply comes
+  // back asynchronously over the outbound_messages realtime channel. If the
+  // hand-off itself fails (rare — 3 times ever in prod), don't leave the user
+  // on silent "Typing…": reply inline with the same fallback. See #4 in
+  // chat-stuck-typing.md.
+  try {
+    await inngest.send(
+      chatMessageReceived.create({
+        sessionId,
+        userId,
+        channel: 'telegram',
+        telegramChatId: ctx.chat.id,
+      }),
+    );
+  } catch (err) {
+    console.error('[telegram-bot] inngest.send(chatMessageReceived) failed', err);
+    await ctx.reply(CHAT_FALLBACK_MESSAGE);
+  }
 }

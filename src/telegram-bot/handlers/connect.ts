@@ -13,6 +13,9 @@ import { InputFile } from 'grammy';
 import { createAdminClient } from '../../lib/supabase/admin';
 import { resolveWallet } from '../polymarket/resolve-wallet';
 import { saveWcSession } from '../db/sessions';
+import { getClobApiCreds, saveClobApiCreds } from '../db/clob-creds';
+import { deriveClobApiCreds } from '../polymarket/derive-api-creds';
+import { requestEip712Sig } from '../wc/sign';
 import { pairForTelegramUser } from '../wc/pair';
 
 const APPROVAL_TIMEOUT_MS = 5 * 60 * 1000;
@@ -84,6 +87,7 @@ export async function handleConnect(ctx: Context): Promise<void> {
       funderAddress: resolution.funder,
       signatureType: resolution.signatureType,
       walletType: resolution.walletType,
+      needsOnboarding: resolution.needsOnboarding,
     });
   } catch (err) {
     console.error('[telegram-bot] /connect saveWcSession failed', err);
@@ -91,11 +95,61 @@ export async function handleConnect(ctx: Context): Promise<void> {
     return;
   }
 
-  const onboardingHint = resolution.needsOnboarding
-    ? "\n\nOne more thing — looks like a brand-new Polymarket account. Visit polymarket.com once from the same wallet to provision your deposit wallet, otherwise V2 trades will be refused."
-    : '';
+  const shortEoa = `${approval.eoa.slice(0, 6)}…${approval.eoa.slice(-4)}`;
+
+  // A brand-new account can't trade until it's provisioned on polymarket.com,
+  // and we can't derive a usable api-key for an undeployed wallet — so stop
+  // here and don't ask for the (useless) authorize-trading signature.
+  if (resolution.needsOnboarding) {
+    await ctx.reply(
+      `Connected ${shortEoa} (${resolution.walletType}).\n\n` +
+        'One more thing — looks like a brand-new Polymarket account. Visit polymarket.com once ' +
+        'from the same wallet to provision your deposit wallet, then run /connect again. Until ' +
+        'then V2 trades will be refused.',
+    );
+    return;
+  }
+
+  // Per-user CLOB credentials. The api-key binds to the EOA that signs (the
+  // connecting wallet) and the L2 POLY_ADDRESS header must carry that same EOA
+  // — exactly what Polymarket's own SDK does for every signature type, including
+  // sigType-3 deposit wallets (where the order's signer is the contract but the
+  // key still belongs to the EOA that owns it). Derive once via a single
+  // ClobAuth signature and cache it; later trades reuse it and only prompt for
+  // the per-order signature.
+  try {
+    const supabase = createAdminClient();
+    const existing = await getClobApiCreds(supabase, ctx.from.id);
+    const haveCurrent =
+      existing &&
+      existing.signerAddress.toLowerCase() === approval.eoa.toLowerCase();
+
+    if (!haveCurrent) {
+      await ctx.reply(
+        'One more signature to authorize trading — gasless and one-time. Check your wallet…',
+      );
+      const creds = await deriveClobApiCreds({
+        signerAddress: approval.eoa,
+        signTypedData: (typedData) =>
+          requestEip712Sig({ topic: approval.topic, eoa: approval.eoa, typedData }),
+      });
+      await saveClobApiCreds(supabase, {
+        telegramUserId: ctx.from.id,
+        signerAddress: approval.eoa,
+        creds,
+      });
+    }
+  } catch (err) {
+    console.error('[telegram-bot] /connect creds derivation failed', err);
+    await ctx.reply(
+      `Connected ${shortEoa} (${resolution.walletType}), but I couldn't finish authorizing ` +
+        'trading (the signature was declined or timed out). Run /connect again to retry — ' +
+        "trades won't go through until this succeeds.",
+    );
+    return;
+  }
 
   await ctx.reply(
-    `Connected ${approval.eoa.slice(0, 6)}…${approval.eoa.slice(-4)} (${resolution.walletType}). You can now ask me about markets and trade in chat.${onboardingHint}`,
+    `Connected ${shortEoa} (${resolution.walletType}). Trading is authorized — you can now ask me about markets and trade in chat.`,
   );
 }

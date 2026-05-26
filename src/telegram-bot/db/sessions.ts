@@ -14,6 +14,7 @@ export interface WcSession {
   funderAddress: string;
   signatureType: 0 | 1 | 2 | 3;
   walletType: WalletType;
+  needsOnboarding: boolean;
   expiresAt: string;
 }
 
@@ -45,6 +46,7 @@ export async function saveWcSession(
         funder_address: session.funderAddress,
         signature_type: session.signatureType,
         wallet_type: session.walletType,
+        needs_onboarding: session.needsOnboarding,
         expires_at: expiresAt,
         last_used_at: new Date().toISOString(),
       })
@@ -60,6 +62,7 @@ export async function saveWcSession(
     funder_address: session.funderAddress,
     signature_type: session.signatureType,
     wallet_type: session.walletType,
+    needs_onboarding: session.needsOnboarding,
     expires_at: expiresAt,
   });
   if (insErr) throw insErr;
@@ -83,6 +86,7 @@ export async function getWcSession(
     funderAddress: data.funder_address,
     signatureType: data.signature_type as 0 | 1 | 2 | 3,
     walletType: data.wallet_type,
+    needsOnboarding: data.needs_onboarding ?? false,
     expiresAt: data.expires_at,
   };
 }
