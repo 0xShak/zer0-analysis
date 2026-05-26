@@ -12,6 +12,10 @@ export const chatMessageReceived = eventType('chat/message.received', {
     // Telegram-only: the chat id the bot must reply into. Populated by the
     // Telegram message handler so chat-respond can route the outbound row.
     telegramChatId?: number | null;
+    // Free-text market the user referenced (intent.market_query, falling back
+    // to the raw message). chat-respond uses it to pull live Polymarket data
+    // into the prompt. Optional — older senders may omit it.
+    marketQuery?: string | null;
   }>(),
 });
 
