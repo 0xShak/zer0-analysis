@@ -9,6 +9,11 @@ import {
   formatTradesForSystem,
   loadChatContext,
 } from '../../chat/context';
+import {
+  formatLiveMarketsForSystem,
+  lookupLiveMarkets,
+  type LiveMarketView,
+} from '../../chat/market-lookup';
 
 // Triggered by the Telegram bot (and any other non-streaming caller). The web
 // /api/chat route streams Groq directly, so it does NOT enqueue this event.
@@ -23,24 +28,41 @@ export const chatRespond = inngest.createFunction(
     triggers: [chatMessageReceived],
   },
   async ({ event, step }) => {
-    const { sessionId, userId, channel, telegramChatId } = event.data as {
-      sessionId: string;
-      userId: string | null;
-      channel: 'web' | 'telegram';
-      telegramChatId?: number | null;
-    };
+    const { sessionId, userId, channel, telegramChatId, marketQuery } =
+      event.data as {
+        sessionId: string;
+        userId: string | null;
+        channel: 'web' | 'telegram';
+        telegramChatId?: number | null;
+        marketQuery?: string | null;
+      };
     const supabase = createAdminClient();
 
     const context = await step.run('load-context', async () => {
       return loadChatContext(supabase, sessionId, userId);
     });
 
+    // Pull live Polymarket data for the market the user named, so ZER0 can
+    // answer about markets outside the brain-tick scan set. Self-gating and
+    // failure-tolerant (returns [] for small-talk or on a Gamma error), so a
+    // miss just means no live-data block — never a failed response.
+    // Cast: Inngest re-types step output through its Jsonify transform, which
+    // is structurally identical here (all primitives/null) but not directly
+    // assignable to LiveMarketView[].
+    const liveMarkets = (await step.run('live-market-lookup', async () => {
+      return marketQuery ? lookupLiveMarkets(marketQuery) : [];
+    })) as LiveMarketView[];
+
     const result = await step.run('groq-completion', async () => {
       const groq = getGroq();
+      const liveBlock =
+        liveMarkets.length > 0
+          ? `\n\n## Live Polymarket data (fetched just now for this question)\n${formatLiveMarketsForSystem(liveMarkets)}`
+          : '';
       const system = `${context.persona}
 
 ## What you've been doing
-${formatRecentWorkForSystem(context.recentMarkets, context.recentThoughts)}
+${formatRecentWorkForSystem(context.recentMarkets, context.recentThoughts)}${liveBlock}
 
 Active trade recommendations:
 ${formatTradesForSystem(context.trades)}

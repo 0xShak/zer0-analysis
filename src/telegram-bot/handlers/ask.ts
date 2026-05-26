@@ -104,13 +104,17 @@ export async function handleAskOrTrade(ctx: Context): Promise<void> {
     return;
   }
 
-  // Default — kick to the existing Inngest chat pipeline.
+  // Default — kick to the existing Inngest chat pipeline. Carry the market the
+  // user referenced so chat-respond can pull live Polymarket data: prefer the
+  // intent parser's extracted market_query, fall back to the raw message
+  // (chat-respond gates on token significance, so small-talk no-ops).
   await inngest.send(
     chatMessageReceived.create({
       sessionId,
       userId,
       channel: 'telegram',
       telegramChatId: ctx.chat.id,
+      marketQuery: intent?.market_query ?? text,
     }),
   );
 }
