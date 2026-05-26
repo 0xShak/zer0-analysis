@@ -108,7 +108,7 @@ export const chatRespond = inngest.createFunction(
       return loadChatContext(supabase, sessionId, userId);
     });
 
-    const reply = await step.run('groq-completion', async () => {
+    const result = await step.run('groq-completion', async () => {
       const groq = getGroq();
       const system = `${context.persona}
 
@@ -127,12 +127,14 @@ Recent conversation memory follows. Respond as ZER0 — knowledgeable about Poly
       // Vercel logs so it's diagnosable without re-deriving. See #6 in
       // chat-stuck-typing.md.
       const startedAt = Date.now();
-      let resp;
       try {
-        resp = await groq.chat.completions.create({
+        const resp = await groq.chat.completions.create({
           model: GROQ_MODELS.CHAT,
           temperature: 0.4,
-          max_tokens: 1500,
+          // 800 (was 1500): the reply counts against Groq's free-tier per-minute
+          // token ceiling; a chat answer rarely needs more, and the smaller cap
+          // lets more messages land within the same minute. See groq.ts.
+          max_tokens: 800,
           messages: [
             { role: 'system', content: system },
             ...context.messages.map((m) => ({
@@ -141,52 +143,79 @@ Recent conversation memory follows. Respond as ZER0 — knowledgeable about Poly
             })),
           ],
         });
+        const finishReason = resp.choices[0]?.finish_reason;
+        console.info('[chat-respond] groq-completion ok', {
+          model: GROQ_MODELS.CHAT,
+          latencyMs: Date.now() - startedAt,
+          finishReason,
+        });
+
+        const tokens_in = resp.usage?.prompt_tokens ?? 0;
+        const tokens_out = resp.usage?.completion_tokens ?? 0;
+        await logUsage({
+          provider: 'groq',
+          model: GROQ_MODELS.CHAT,
+          tokens_in,
+          tokens_out,
+          cost_usd: computeCost(GROQ_MODELS.CHAT, { tokens_in, tokens_out }),
+          step: 'chat',
+        });
+        return { reply: resp.choices[0]?.message?.content ?? '', degraded: false };
       } catch (err) {
+        // Groq rate-limited (429) or otherwise unavailable. Do NOT rethrow:
+        // throwing fails the step, Inngest retries it ~4x over several minutes
+        // (still rate-limited each time), and the user is left on "Typing…"
+        // with no reply ever delivered. Instead deliver a short fallback so the
+        // bot always answers. This mirrors brain-tick's summarize fallback.
         // groq-sdk APIError exposes `.status` (e.g. 429); plain errors don't.
-        const status = (err as { status?: number })?.status;
-        console.error('[chat-respond] groq-completion error', {
+        const status = (err as { status?: number } | null)?.status;
+        console.warn('[chat-respond] groq-completion failed, delivering fallback', {
           model: GROQ_MODELS.CHAT,
           latencyMs: Date.now() - startedAt,
           errorName: (err as Error)?.name,
           errorStatus: status,
-          // TODO(#3): the chat path shares groq.ts's maxRetries:0/timeout:15s,
-          // tuned for the batch budget. Once the dashboard confirms the error
-          // class, give interactive chat its own resilient client / throttle
-          // brain-tick. Do not tune blindly here.
         });
-        throw err;
+        const reply =
+          status === 429
+            ? "I'm getting flooded with messages right now and hit my rate limit — give me a minute and ping me again."
+            : 'Something glitched on my end just now — try me again in a sec.';
+        return { reply, degraded: true };
       }
-      const finishReason = resp.choices[0]?.finish_reason;
-      console.info('[chat-respond] groq-completion ok', {
-        model: GROQ_MODELS.CHAT,
-        latencyMs: Date.now() - startedAt,
-        finishReason,
-      });
-
-      const tokens_in = resp.usage?.prompt_tokens ?? 0;
-      const tokens_out = resp.usage?.completion_tokens ?? 0;
-      await logUsage({
-        provider: 'groq',
-        model: GROQ_MODELS.CHAT,
-        tokens_in,
-        tokens_out,
-        cost_usd: computeCost(GROQ_MODELS.CHAT, { tokens_in, tokens_out }),
-        step: 'chat',
-      });
-      return resp.choices[0]?.message?.content ?? '';
     });
 
     await step.run('persist-and-deliver', async () => {
       // Guard empty content: Groq can return '' (e.g. finish_reason
-      // content_filter). Persisting '' would make outbound.ts call
-      // sendMessage('') → Telegram 400 → another silent path. Substitute the
+      // content_filter). Persisting/sending '' would make the Telegram outbound
+      // path call sendMessage('') → 400 → another silent failure. Substitute the
       // fallback instead. See #2 in chat-stuck-typing.md.
-      const content = reply.trim() === '' ? CHAT_FALLBACK_MESSAGE : reply;
-      await persistAssistantReply(
-        supabase,
-        { sessionId, userId, channel, telegramChatId },
-        content,
-      );
+      const isEmpty = result.reply.trim() === '';
+      const content = isEmpty ? CHAT_FALLBACK_MESSAGE : result.reply;
+
+      // Only persist genuine replies to message history. A degraded fallback (or
+      // a substituted empty reply) is still delivered to the channel, but kept
+      // out of `messages` so the canned line doesn't get fed back into the next
+      // prompt's history.
+      if (!result.degraded && !isEmpty) {
+        await supabase.from('messages').insert({
+          session_id: sessionId,
+          user_id: userId,
+          role: 'assistant',
+          channel,
+          content,
+        });
+      }
+      if (channel !== 'web') {
+        // The Telegram outbound listener watches this table over Supabase
+        // Realtime. It needs the chat id from the original event — we never
+        // store telegram_chat_id on the session row.
+        await supabase.from('outbound_messages').insert({
+          channel,
+          session_id: sessionId,
+          user_id: userId,
+          telegram_chat_id: telegramChatId ?? null,
+          content,
+        });
+      }
     });
 
     return { ok: true };

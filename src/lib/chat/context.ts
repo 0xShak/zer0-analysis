@@ -43,10 +43,10 @@ export type ChatContext = {
 // Context pieces fetched in parallel per prompt1 §5, extended with recent
 // classified-deterministic markets + recent public thoughts so the bot has
 // real grounding to reference instead of hallucinating Polymarket markets.
-//  - history: last 20 messages tied to either user_id or session_id.
+//  - history: last HISTORY_LIMIT messages tied to either user_id or session_id.
 //  - trades: up to 10 still-open recommendations.
 //  - recentMarkets: last 24h of deterministic markets ZER0 has at least
-//    classified (top 15) — includes both deep-analyzed markets AND
+//    classified (top RECENT_MARKETS_LIMIT) — includes both deep-analyzed AND
 //    classified-but-not-yet-deep-analyzed ones, so the chat can talk about
 //    crypto/policy/election markets ZER0 has seen even before the brain
 //    forms a deep view. last_analyzed_yes_price may be NULL for the latter.
@@ -58,22 +58,39 @@ export async function loadChatContext(
   sessionId: string,
   userId: string | null,
 ): Promise<ChatContext> {
+  // History depth feeds straight into the prompt and counts against Groq's
+  // free-tier per-minute token ceiling (~6k TPM, shared across all models).
+  // 10 turns is enough for conversational continuity while keeping each chat
+  // call small enough that a couple of messages can land within the same
+  // minute without 429ing. Was 20 — see groq.ts for the full rate-limit note.
+  const HISTORY_LIMIT = 10;
+
   const historyQuery = userId
     ? supabase
         .from('messages')
         .select('role, content, created_at')
         .or(`user_id.eq.${userId},session_id.eq.${sessionId}`)
         .order('created_at', { ascending: false })
-        .limit(20)
+        .limit(HISTORY_LIMIT)
     : supabase
         .from('messages')
         .select('role, content, created_at')
         .eq('session_id', sessionId)
         .order('created_at', { ascending: false })
-        .limit(20);
+        .limit(HISTORY_LIMIT);
 
   const nowIso = new Date().toISOString();
   const since24hIso = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+
+  // How many recently-seen deterministic markets the chat may reference. This
+  // is the real ceiling on chat breadth — brain-tick's classify step feeds
+  // market_scans, but the model only ever sees this many. Trimmed from 40 to
+  // 15: the market list is the largest variable chunk of the system prompt,
+  // and on Groq's free tier (~6k tokens/min, shared across models) a 40-market
+  // prompt could consume most of the per-minute budget in a single call,
+  // 429ing the next message. 15 keeps grounding broad while leaving room for
+  // back-to-back messages. See groq.ts for the full rate-limit rationale.
+  const RECENT_MARKETS_LIMIT = 15;
 
   const [historyRes, tradesRes, recentMarketsRes, recentThoughtsRes, persona] =
     await Promise.all([
@@ -93,7 +110,7 @@ export async function loadChatContext(
         .eq('deterministic', true)
         .gte('last_seen_at', since24hIso)
         .order('last_seen_at', { ascending: false })
-        .limit(15),
+        .limit(RECENT_MARKETS_LIMIT),
       supabase
         .from('thoughts')
         .select('content, market_condition_id, created_at')

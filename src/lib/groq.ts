@@ -19,7 +19,17 @@ export function getGroq(): Groq {
 }
 
 // Models referenced by zer0.md.
+//
+// CHAT was llama-3.3-70b-versatile, but Groq's free tier tracks rate limits
+// PER MODEL, and the 70B bucket is only ~1,000 requests/day vs ~14,400/day for
+// 8B-instant — a separate, 14x-larger pool. With the Developer (paid) tier
+// upgrade unavailable, the 70B chat path 429'd constantly and left Telegram
+// users stuck on "Typing…" with no reply. Moving chat to 8B keeps it running
+// on free tier for $0. NB: the per-minute token ceiling (~6k TPM) is identical
+// across both models, so this change alone isn't enough — we also trimmed the
+// chat prompt (see chat/context.ts) and capped max_tokens so a single call
+// stays well under the per-minute window.
 export const GROQ_MODELS = {
-  CHAT: 'llama-3.3-70b-versatile',
+  CHAT: 'llama-3.1-8b-instant',
   CLASSIFIER: 'llama-3.1-8b-instant',
 } as const;

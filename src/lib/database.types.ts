@@ -136,6 +136,14 @@ export type Database = {
           status: string;
           created_at: string;
           expires_at: string | null;
+          resolved_at: string | null;
+          winning_token_id: string | null;
+          resolution_price: number | null;
+          is_correct: boolean | null;
+          realized_pnl_usd: number | null;
+          mark_price: number | null;
+          mark_pnl_usd: number | null;
+          settled_at: string | null;
         };
         Insert: {
           id?: string;
@@ -151,6 +159,14 @@ export type Database = {
           status?: string;
           created_at?: string;
           expires_at?: string | null;
+          resolved_at?: string | null;
+          winning_token_id?: string | null;
+          resolution_price?: number | null;
+          is_correct?: boolean | null;
+          realized_pnl_usd?: number | null;
+          mark_price?: number | null;
+          mark_pnl_usd?: number | null;
+          settled_at?: string | null;
         };
         Update: {
           id?: string;
@@ -166,6 +182,14 @@ export type Database = {
           status?: string;
           created_at?: string;
           expires_at?: string | null;
+          resolved_at?: string | null;
+          winning_token_id?: string | null;
+          resolution_price?: number | null;
+          is_correct?: boolean | null;
+          realized_pnl_usd?: number | null;
+          mark_price?: number | null;
+          mark_pnl_usd?: number | null;
+          settled_at?: string | null;
         };
         Relationships: [];
       };

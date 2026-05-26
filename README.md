@@ -145,7 +145,7 @@ IS NULL`) so a restart doesn't drop messages.
 
 ### `POST /api/chat`
 
-Web chat endpoint. Runs on the Node runtime; streams a Groq Llama 3.3 70B
+Web chat endpoint. Runs on the Node runtime; streams a Groq Llama 3.1 8B
 response back as Server-Sent Events.
 
 **Request body**
@@ -171,10 +171,10 @@ response back as Server-Sent Events.
    active `entitlements` row for the session/user → `HTTP 402` with
    `{ paywall: true, reason: "daily_limit_reached", placeholder_charge_url: null }`
    and a `scope='app'` thought is logged.
-5. Persist the user message, load the last 20 messages + up to 10 open
+5. Persist the user message, load the last 10 messages + up to 10 open
    trade recommendations + `ZER0.md` (in parallel), and stream Groq.
 6. After the stream closes: insert the assistant message and write an
-   `agent_usage` row (`provider='groq'`, `model='llama-3.3-70b-versatile'`,
+   `agent_usage` row (`provider='groq'`, `model='llama-3.1-8b-instant'`,
    `step='chat'`).
 
 **Successful response**

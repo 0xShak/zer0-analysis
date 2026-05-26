@@ -113,6 +113,36 @@ export async function fetchTradableMarkets(limit = 100, offset = 0): Promise<Gam
   }
 }
 
+// Fetch a single market by conditionId — unlike fetchTradableMarkets this does
+// NOT filter on closed/active/archived, so RESOLVED markets come back too. Used
+// by the settlement job to read a market's final outcome after it resolves.
+// Returns null when Gamma has no row for the id (e.g. very old / purged market).
+export async function fetchMarketByCondition(
+  conditionId: string,
+): Promise<GammaMarket | null> {
+  const params = new URLSearchParams({
+    condition_ids: conditionId,
+    limit: '1',
+  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), GAMMA_REQUEST_TIMEOUT_MS);
+  try {
+    const res = await fetch(`${GAMMA_BASE}/markets?${params}`, {
+      headers: { Accept: 'application/json' },
+      next: { revalidate: 60 },
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      throw new Error(`Gamma /markets ${res.status}: ${await res.text()}`);
+    }
+    const raw = (await res.json()) as GammaMarketRaw[];
+    const first = raw?.[0];
+    return first ? normalise(first) : null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // Numeric guards from zer0.md §9 — Gamma ships no thresholds, we add them.
 export function passesNumericFilter(m: GammaMarket): boolean {
   const liquidity = parseFloat(m.liquidity ?? '0');

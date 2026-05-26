@@ -9,7 +9,8 @@
     "lint": "eslint",
     "test": "vitest run",
     "bot": "tsx --env-file=.env.local src/telegram-bot/index.ts",
-    "force-rec": "tsx --env-file=.env.local scripts/force-recommendation.ts"
+    "force-rec": "tsx --env-file=.env.local scripts/force-recommendation.ts",
+    "settle-dry-run": "tsx --env-file=.env.local scripts/settle-dry-run.ts"
   },
   "dependencies": {
     "@polymarket/builder-relayer-client": "^0.0.9",
