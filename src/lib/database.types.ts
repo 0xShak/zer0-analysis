@@ -121,6 +121,33 @@ export type Database = {
         };
         Relationships: [];
       };
+      x_posts: {
+        Row: {
+          id: number;
+          kind: 'signal' | 'digest';
+          ref_id: string;
+          tweet_id: string | null;
+          content: string | null;
+          posted_at: string;
+        };
+        Insert: {
+          id?: number;
+          kind: 'signal' | 'digest';
+          ref_id: string;
+          tweet_id?: string | null;
+          content?: string | null;
+          posted_at?: string;
+        };
+        Update: {
+          id?: number;
+          kind?: 'signal' | 'digest';
+          ref_id?: string;
+          tweet_id?: string | null;
+          content?: string | null;
+          posted_at?: string;
+        };
+        Relationships: [];
+      };
       trade_recommendations: {
         Row: {
           id: string;
