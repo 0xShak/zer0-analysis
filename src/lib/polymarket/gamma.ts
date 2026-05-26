@@ -22,6 +22,13 @@ interface GammaMarketRaw {
   enableOrderBook: boolean;
   negRisk?: boolean;
   clobTokenIds: string | string[];
+  // Live order-book fields — only present on the /public-search payload, not
+  // on the discovery /markets feed. May be null when a market has no book yet.
+  volume24hr?: number | null;
+  bestBid?: number | null;
+  bestAsk?: number | null;
+  lastTradePrice?: number | null;
+  spread?: number | null;
 }
 
 export interface GammaMarket {
@@ -42,6 +49,13 @@ export interface GammaMarket {
   enableOrderBook: boolean;
   negRisk?: boolean;
   clobTokenIds: string[];
+  // Live order-book fields — populated from /public-search, undefined when the
+  // market came from the discovery /markets feed (which omits them).
+  volume24hr?: number;
+  bestBid?: number;
+  bestAsk?: number;
+  lastTradePrice?: number;
+  spread?: number;
 }
 
 const GAMMA_BASE = 'https://gamma-api.polymarket.com';
@@ -78,6 +92,11 @@ function normalise(m: GammaMarketRaw): GammaMarket {
     enableOrderBook: m.enableOrderBook,
     negRisk: m.negRisk,
     clobTokenIds: parseStringArray(m.clobTokenIds),
+    volume24hr: m.volume24hr ?? undefined,
+    bestBid: m.bestBid ?? undefined,
+    bestAsk: m.bestAsk ?? undefined,
+    lastTradePrice: m.lastTradePrice ?? undefined,
+    spread: m.spread ?? undefined,
   };
 }
 
@@ -138,6 +157,60 @@ export async function fetchMarketByCondition(
     const raw = (await res.json()) as GammaMarketRaw[];
     const first = raw?.[0];
     return first ? normalise(first) : null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+interface GammaSearchResponse {
+  events?: Array<{ markets?: GammaMarketRaw[] }>;
+}
+
+// Full-catalog text search via Gamma's /public-search endpoint. Unlike
+// fetchTradableMarkets (which walks the first few pages of the discovery feed),
+// this queries Polymarket's whole active catalog, so an arbitrary market a user
+// names in chat — e.g. "US x Iran peace deal" — is actually findable. Results
+// come back as events with nested markets; a single event can mix live and
+// already-resolved legs (different resolution dates), so we drop anything not
+// currently tradable. Uses cache:'no-store' so the prices are live, not the
+// 60s-revalidated copy the discovery feed serves.
+export async function searchMarketsLive(
+  query: string,
+  limit = 12,
+): Promise<GammaMarket[]> {
+  const q = query.trim();
+  if (!q) return [];
+  const params = new URLSearchParams({
+    q,
+    limit_per_type: '20',
+    events_status: 'active',
+  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), GAMMA_REQUEST_TIMEOUT_MS);
+  try {
+    const res = await fetch(`${GAMMA_BASE}/public-search?${params}`, {
+      headers: { Accept: 'application/json' },
+      cache: 'no-store',
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      throw new Error(`Gamma /public-search ${res.status}: ${await res.text()}`);
+    }
+    const data = (await res.json()) as GammaSearchResponse;
+    const out: GammaMarket[] = [];
+    for (const ev of data.events ?? []) {
+      for (const raw of ev.markets ?? []) {
+        const m = normalise(raw);
+        // Drop closed/resolved/archived legs and non-binary markets — chat
+        // should only speak to markets that are still live and have a clean
+        // Yes/No price.
+        if (!m.active || m.closed || m.archived) continue;
+        if (m.outcomes.length !== 2 || m.outcomePrices.length !== 2) continue;
+        out.push(m);
+        if (out.length >= limit) return out;
+      }
+    }
+    return out;
   } finally {
     clearTimeout(timer);
   }

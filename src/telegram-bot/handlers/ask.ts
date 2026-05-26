@@ -110,6 +110,11 @@ export async function handleAskOrTrade(ctx: Context): Promise<void> {
   // hand-off itself fails (rare — 3 times ever in prod), don't leave the user
   // on silent "Typing…": reply inline with the same fallback. See #4 in
   // chat-stuck-typing.md.
+  //
+  // Carry the market the user referenced so chat-respond can pull live
+  // Polymarket data: prefer the intent parser's extracted market_query, fall
+  // back to the raw message (chat-respond gates on token significance, so
+  // small-talk no-ops).
   try {
     await inngest.send(
       chatMessageReceived.create({
@@ -117,6 +122,7 @@ export async function handleAskOrTrade(ctx: Context): Promise<void> {
         userId,
         channel: 'telegram',
         telegramChatId: ctx.chat.id,
+        marketQuery: intent?.market_query ?? text,
       }),
     );
   } catch (err) {

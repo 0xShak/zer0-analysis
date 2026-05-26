@@ -9,6 +9,10 @@ import {
   formatTradesForSystem,
   loadChatContext,
 } from '@/lib/chat/context';
+import {
+  formatLiveMarketsForSystem,
+  lookupLiveMarkets,
+} from '@/lib/chat/market-lookup';
 import { getGroq, GROQ_MODELS } from '@/lib/groq';
 import { logUsage } from '@/lib/cost/log';
 import { computeCost } from '@/lib/cost/openai-pricing';
@@ -160,10 +164,20 @@ export async function POST(req: NextRequest) {
     // ---- load context (history + trades + persona, in parallel) ----
     const context = await loadChatContext(supabase, sessionId, userId);
 
+    // ---- live Polymarket lookup for the market the user named ----
+    // No intent parse on this path, so the raw message is the query; the lookup
+    // self-gates on token significance (small-talk → []) and swallows Gamma
+    // errors, so this never blocks or breaks the stream.
+    const liveMarkets = await lookupLiveMarkets(message);
+    const liveBlock =
+      liveMarkets.length > 0
+        ? `\n\n## Live Polymarket data (fetched just now for this question)\n${formatLiveMarketsForSystem(liveMarkets)}`
+        : '';
+
     const systemPrompt = `${context.persona}
 
 ## What you've been doing
-${formatRecentWorkForSystem(context.recentMarkets, context.recentThoughts)}
+${formatRecentWorkForSystem(context.recentMarkets, context.recentThoughts)}${liveBlock}
 
 Active trade recommendations:
 ${formatTradesForSystem(context.trades)}
