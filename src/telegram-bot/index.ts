@@ -97,6 +97,24 @@ async function main(): Promise<void> {
 
   registerHandlers(bot);
 
+  // Populate Telegram's "/" command menu so commands are discoverable via
+  // autocomplete (without this, /sim et al. work when typed but never show
+  // up in the menu). setMyCommands registers the list with Telegram's servers
+  // once; it's idempotent, so re-asserting it on every boot is harmless.
+  // Best-effort — a failure here must never stop the bot from starting.
+  try {
+    await bot.api.setMyCommands([
+      { command: 'sim', description: 'Run a swarm simulation of a scenario' },
+      { command: 'connect', description: 'Connect your wallet to trade' },
+      { command: 'link', description: 'Link this chat to your web session' },
+      { command: 'help', description: 'What I can do' },
+      { command: 'start', description: 'Say hi and see what I do' },
+    ]);
+    console.log('[telegram-bot] command menu registered');
+  } catch (err) {
+    console.error('[telegram-bot] setMyCommands failed (non-fatal)', err);
+  }
+
   // Global error handler — grammY would otherwise crash on an uncaught
   // handler exception, killing the long-poll loop.
   bot.catch((err) => {
