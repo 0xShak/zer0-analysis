@@ -9,11 +9,23 @@ import QRCode from 'qrcode';
 import { getSignClient } from './sign-client';
 
 const POLYGON_CAIP2 = 'eip155:137';
+const BASE_CAIP2 = 'eip155:8453';
 
 const REQUIRED_NAMESPACES = {
   eip155: {
     chains: [POLYGON_CAIP2],
     methods: ['eth_signTypedData_v4', 'personal_sign'],
+    events: ['chainChanged', 'accountsChanged'],
+  },
+};
+
+// Base is OPTIONAL so a wallet that doesn't support it can still pair for
+// Polygon trading. When granted, it lets the $ZER0 pay-per-sim flow send an
+// eth_sendTransaction on Base without a second pairing (wc/pay.ts).
+const OPTIONAL_NAMESPACES = {
+  eip155: {
+    chains: [BASE_CAIP2],
+    methods: ['eth_sendTransaction', 'eth_signTypedData_v4', 'personal_sign'],
     events: ['chainChanged', 'accountsChanged'],
   },
 };
@@ -44,6 +56,7 @@ export async function pairForTelegramUser(): Promise<PairPayload> {
   const client = await getSignClient();
   const { uri, approval } = await client.connect({
     requiredNamespaces: REQUIRED_NAMESPACES,
+    optionalNamespaces: OPTIONAL_NAMESPACES,
   });
   if (!uri) throw new Error('walletconnect connect() returned no URI');
 

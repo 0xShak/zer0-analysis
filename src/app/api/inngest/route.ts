@@ -3,6 +3,7 @@ import { inngest } from '@/lib/inngest/client';
 import { brainTick } from '@/lib/inngest/functions/brain-tick';
 import { chatRespond } from '@/lib/inngest/functions/chat-respond';
 import { settlePredictions } from '@/lib/inngest/functions/settle-predictions';
+import { simRun } from '@/lib/inngest/functions/sim-run';
 import { xBroadcast } from '@/lib/inngest/functions/x-broadcast';
 
 // Vercel's default function duration is 10s on Hobby, 15s on Pro — far too
@@ -14,5 +15,5 @@ export const runtime = 'nodejs';
 
 export const { GET, POST, PUT } = serve({
   client: inngest,
-  functions: [brainTick, chatRespond, settlePredictions, xBroadcast],
+  functions: [brainTick, chatRespond, settlePredictions, simRun, xBroadcast],
 });

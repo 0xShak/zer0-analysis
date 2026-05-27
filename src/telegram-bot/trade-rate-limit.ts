@@ -8,6 +8,8 @@ import { rateLimit, rateLimitKey } from '../lib/trades/rate-limit';
 
 const TRADES_PER_DAY = 10;
 const MESSAGES_PER_HOUR = 50;
+// Sims are ~$1 OpenRouter each — keep the free-run ceiling tighter than trades.
+const SIMS_PER_DAY = 5;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
@@ -25,5 +27,13 @@ export function allowChatMessage(telegramUserId: number): boolean {
     rateLimitKey(['tg-trade', String(telegramUserId), 'hour']),
     MESSAGES_PER_HOUR,
     HOUR_MS,
+  );
+}
+
+export function allowSimRequest(telegramUserId: number): boolean {
+  return rateLimit(
+    rateLimitKey(['tg-sim', String(telegramUserId), 'day']),
+    SIMS_PER_DAY,
+    DAY_MS,
   );
 }

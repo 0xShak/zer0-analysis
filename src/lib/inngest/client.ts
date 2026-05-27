@@ -22,3 +22,13 @@ export const chatMessageReceived = eventType('chat/message.received', {
 export const brainTickRequested = eventType('brain/tick.requested', {
   schema: staticSchema<Record<string, never>>(),
 });
+
+// Fired once a sim is paid-for (or free, when the payment gate is off). The
+// pending_sims row is the source of truth, so the payload is just its id —
+// sim-run loads everything else from the row. Sent by the Telegram /sim
+// handler and the web /api/sim route.
+export const simRequested = eventType('sim/requested', {
+  schema: staticSchema<{
+    pendingSimId: string;
+  }>(),
+});
