@@ -77,11 +77,27 @@ export default function SimResultPage({
       {error && <p style={styles.error}>{error}</p>}
 
       {!error && !completed && !failed && (
-        <p style={styles.status}>
-          {status?.state === 'AWAITING_PAYMENT'
-            ? 'Waiting for payment…'
-            : 'Running the swarm… this takes a few minutes. This page updates itself.'}
-        </p>
+        <>
+          <p style={styles.status}>
+            {status?.state === 'AWAITING_PAYMENT'
+              ? 'Waiting for payment…'
+              : 'Running the swarm… this takes a few minutes. This page updates itself.'}
+          </p>
+          {/* sim-run publishes + hands back watch_url the moment the run starts,
+              so the live link can show mid-run — no need to wait for completion. */}
+          {sim?.watch_url && status?.state !== 'AWAITING_PAYMENT' && (
+            <p>
+              <a
+                href={sim.watch_url}
+                target="_blank"
+                rel="noreferrer"
+                style={styles.link}
+              >
+                ▶ Watch it live
+              </a>
+            </p>
+          )}
+        </>
       )}
 
       {failed && (

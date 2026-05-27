@@ -362,6 +362,31 @@ export const simRun = inngest.createFunction(
     await step.run('start', () =>
       startSimulation({ simulationId: miroSimId, maxRounds: MAX_ROUNDS }),
     );
+
+    // 6b. Hand the user the watch link NOW. The sim is published (4b) and the
+    //     run has begun, so /watch shows live activity. Without this they'd wait
+    //     minutes with no feedback. Persist watch_url too so the web result page
+    //     can surface the link mid-run (it polls /api/sim/[id]). One extra
+    //     outbound; its own step so a replay never double-sends. Best-effort —
+    //     a delivery hiccup here must not fail a sim that's actually running.
+    const earlyWatchUrl = watchUrl(miroSimId);
+    await step.run('deliver-watch-early', async () => {
+      try {
+        await updateSimulation(supabase, claim.simulationId, {
+          watchUrl: earlyWatchUrl,
+        });
+        await deliverSimMessage(
+          supabase,
+          claim.routing,
+          `▶ Your swarm sim is live — watch it run: ${earlyWatchUrl}\nI'll drop the summary here the moment it wraps.`,
+        );
+        return { delivered: true };
+      } catch (err) {
+        console.warn('[sim-run] early watch-link delivery failed', err);
+        return { delivered: false };
+      }
+    });
+
     for (let i = 0; i < RUN_MAX_POLLS; i++) {
       const poll = await step.run(`run-poll-${i}`, async () => {
         const s = await getRunStatus(miroSimId);
