@@ -688,6 +688,132 @@ export type Database = {
         Update: { key?: string; value?: Json; updated_at?: string };
         Relationships: [];
       };
+      pending_sims: {
+        Row: {
+          id: string;
+          channel: 'web' | 'telegram';
+          user_id: string | null;
+          session_id: string | null;
+          telegram_user_id: number | null;
+          telegram_chat_id: number | null;
+          scenario: string;
+          state: | 'AWAITING_PAYMENT' | 'PAID' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'EXPIRED' | 'CANCELLED';
+          price_zer0: number | null;
+          pay_to_address: string | null;
+          pay_tx_hash: string | null;
+          paid_at: string | null;
+          error: string | null;
+          expires_at: string;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          channel: 'web' | 'telegram';
+          user_id?: string | null;
+          session_id?: string | null;
+          telegram_user_id?: number | null;
+          telegram_chat_id?: number | null;
+          scenario: string;
+          state?: | 'AWAITING_PAYMENT' | 'PAID' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'EXPIRED' | 'CANCELLED';
+          price_zer0?: number | null;
+          pay_to_address?: string | null;
+          pay_tx_hash?: string | null;
+          paid_at?: string | null;
+          error?: string | null;
+          expires_at?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          channel?: 'web' | 'telegram';
+          user_id?: string | null;
+          session_id?: string | null;
+          telegram_user_id?: number | null;
+          telegram_chat_id?: number | null;
+          scenario?: string;
+          state?: | 'AWAITING_PAYMENT' | 'PAID' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'EXPIRED' | 'CANCELLED';
+          price_zer0?: number | null;
+          pay_to_address?: string | null;
+          pay_tx_hash?: string | null;
+          paid_at?: string | null;
+          error?: string | null;
+          expires_at?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      simulations: {
+        Row: {
+          id: string;
+          pending_sim_id: string | null;
+          channel: 'web' | 'telegram';
+          user_id: string | null;
+          session_id: string | null;
+          telegram_chat_id: number | null;
+          scenario: string;
+          status: | 'AWAITING_PAYMENT' | 'PAID' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'EXPIRED' | 'CANCELLED';
+          miroshark_project_id: string | null;
+          miroshark_graph_id: string | null;
+          miroshark_simulation_id: string | null;
+          watch_url: string | null;
+          share_card_url: string | null;
+          signal_json: Json | null;
+          polymarket_json: Json | null;
+          summary: string | null;
+          error: string | null;
+          wall_clock_ms: number | null;
+          created_at: string;
+          completed_at: string | null;
+        };
+        Insert: {
+          id?: string;
+          pending_sim_id?: string | null;
+          channel: 'web' | 'telegram';
+          user_id?: string | null;
+          session_id?: string | null;
+          telegram_chat_id?: number | null;
+          scenario: string;
+          status?: | 'AWAITING_PAYMENT' | 'PAID' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'EXPIRED' | 'CANCELLED';
+          miroshark_project_id?: string | null;
+          miroshark_graph_id?: string | null;
+          miroshark_simulation_id?: string | null;
+          watch_url?: string | null;
+          share_card_url?: string | null;
+          signal_json?: Json | null;
+          polymarket_json?: Json | null;
+          summary?: string | null;
+          error?: string | null;
+          wall_clock_ms?: number | null;
+          created_at?: string;
+          completed_at?: string | null;
+        };
+        Update: {
+          id?: string;
+          pending_sim_id?: string | null;
+          channel?: 'web' | 'telegram';
+          user_id?: string | null;
+          session_id?: string | null;
+          telegram_chat_id?: number | null;
+          scenario?: string;
+          status?: | 'AWAITING_PAYMENT' | 'PAID' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'EXPIRED' | 'CANCELLED';
+          miroshark_project_id?: string | null;
+          miroshark_graph_id?: string | null;
+          miroshark_simulation_id?: string | null;
+          watch_url?: string | null;
+          share_card_url?: string | null;
+          signal_json?: Json | null;
+          polymarket_json?: Json | null;
+          summary?: string | null;
+          error?: string | null;
+          wall_clock_ms?: number | null;
+          created_at?: string;
+          completed_at?: string | null;
+        };
+        Relationships: [];
+      };
     };
     Views: Record<string, never>;
     Functions: {
@@ -705,6 +831,14 @@ export type Database = {
         | 'DONE'
         | 'CANCELLED'
         | 'EXPIRED';
+      sim_state:
+        | 'AWAITING_PAYMENT'
+        | 'PAID'
+        | 'RUNNING'
+        | 'COMPLETED'
+        | 'FAILED'
+        | 'EXPIRED'
+        | 'CANCELLED';
     };
     CompositeTypes: Record<string, never>;
   };

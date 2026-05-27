@@ -22,6 +22,7 @@ import {
 import { parseIntent, IntentParseError } from '../intent/parse';
 import { allowChatMessage } from '../trade-rate-limit';
 import { handleTradeIntent } from './trade';
+import { handleSimIntent } from './sim';
 
 const CONFIDENCE_THRESHOLD = 0.7;
 const PAYWALL_MESSAGE =
@@ -102,6 +103,16 @@ export async function handleAskOrTrade(ctx: Context): Promise<void> {
     await ctx.reply(
       "I think you want to trade but I'm not sure — could you spell it out? e.g. 'buy $5 of YES on the Bitcoin market'.",
     );
+    return;
+  }
+
+  // Sim intent supersedes the chat pipeline, same structural switch as trades.
+  if (
+    intent &&
+    intent.intent === 'run_sim' &&
+    intent.confidence >= CONFIDENCE_THRESHOLD
+  ) {
+    await handleSimIntent(ctx, intent.scenario ?? text);
     return;
   }
 

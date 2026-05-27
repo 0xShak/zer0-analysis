@@ -24,6 +24,11 @@ export const env = {
   POLYGON_RPC_URL:
     process.env.POLYGON_RPC_URL ?? 'https://polygon-rpc.com',
 
+  // Base mainnet JSON-RPC, used to verify the $ZER0 pay-per-sim transfer
+  // (lib/web3/zer0-payment). Defaults to Base's public RPC; override with a
+  // private RPC if rate-limits bite under load.
+  BASE_RPC_URL: process.env.BASE_RPC_URL ?? 'https://mainnet.base.org',
+
   // Server-only — readers should call these via getters below to surface
   // a useful error when the var is unset during a request.
   get SUPABASE_SERVICE_KEY() { return need('SUPABASE_SERVICE_KEY'); },
@@ -78,4 +83,36 @@ export const env = {
   get X_API_SECRET() { return need('X_API_SECRET'); },
   get X_ACCESS_TOKEN() { return need('X_ACCESS_TOKEN'); },
   get X_ACCESS_TOKEN_SECRET() { return need('X_ACCESS_TOKEN_SECRET'); },
+
+  // ---- MiroShark (Track B / VPS) — run-a-sim integration ----
+  // Public base URL + bearer token for the self-hosted MiroShark API. Both
+  // are handed back by the VPS Claude (miroshark-zero.html §9). Getters so an
+  // unset value fails loudly the moment the sim client makes a request, rather
+  // than sending an unauth'd call to undefined.
+  //
+  // VERIFIED against github.com/aaronjmars/MiroShark: MiroShark's read/run
+  // endpoints have NO auth — MIROSHARK_API_TOKEN is the bearer the VPS reverse
+  // proxy enforces (the spec §4 step 4 adds the proxy precisely because the
+  // service is otherwise open). The one exception is the publish/resolve/outcome
+  // mutation routes, which check `Authorization: Bearer $MIROSHARK_ADMIN_TOKEN`
+  // (a separate fail-closed secret in MiroShark's OWN env). We must publish each
+  // sim (signal.json / share-card / watch all gate on is_public), so on the VPS
+  // set MIROSHARK_ADMIN_TOKEN EQUAL to the proxy bearer — then our single token
+  // satisfies both the proxy and MiroShark's admin check.
+  get MIROSHARK_API_URL() { return need('MIROSHARK_API_URL'); },
+  get MIROSHARK_API_TOKEN() { return need('MIROSHARK_API_TOKEN'); },
+
+  // ---- Pay-per-sim ($ZER0 on Base) ----
+  // Master switch. While 'false' (the default), sims run free — the feature
+  // can ship + be smoke-tested before the token/price/sink are finalized,
+  // mirroring X_POSTING_ENABLED. Flip to 'true' once §8 product inputs land.
+  ZER0_SIM_PAYMENT_ENABLED: process.env.ZER0_SIM_PAYMENT_ENABLED ?? 'false',
+  // $ZER0 ERC-20 contract on Base. Needed only when the payment gate is on.
+  get ZER0_TOKEN_ADDRESS() { return need('ZER0_TOKEN_ADDRESS'); },
+  // Where the per-sim fee goes — treasury address or a burn address. Needed
+  // only when the payment gate is on.
+  get ZER0_SIM_SINK_ADDRESS() { return need('ZER0_SIM_SINK_ADDRESS'); },
+  // Human-readable $ZER0 amount charged per sim (e.g. '1000'). Multiplied by
+  // 10^decimals at verify time. Needed only when the payment gate is on.
+  get ZER0_SIM_PRICE() { return need('ZER0_SIM_PRICE'); },
 };

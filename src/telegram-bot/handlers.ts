@@ -7,6 +7,7 @@ import {
 import { handleConnect } from './handlers/connect';
 import { handleAskOrTrade } from './handlers/ask';
 import { handleTradeCallback } from './handlers/confirm';
+import { handleSimCommand, handleSimCallback } from './handlers/sim';
 
 const WELCOME =
   "Hey, ZER0 here. I scan Polymarket all day looking for prediction markets " +
@@ -19,6 +20,8 @@ const HELP =
   "Commands:\n" +
   '/start — say hi, learn what I do\n' +
   '/help — this message\n' +
+  '/sim <scenario> — run a MiroShark swarm simulation on a hypothetical and ' +
+  "get back a signal + share card\n" +
   '/link <code> — bind this Telegram chat to your web session so memory ' +
   'merges across both surfaces\n\n' +
   "Or just send a regular message and I'll respond with what I'm watching " +
@@ -92,12 +95,40 @@ export function registerHandlers(bot: Bot): void {
     }
   });
 
+  // /sim <scenario> — run a MiroShark swarm simulation.
+  bot.command('sim', async (ctx) => {
+    try {
+      await handleSimCommand(ctx);
+    } catch (err) {
+      console.error('[telegram-bot] /sim failed', err);
+      try {
+        await ctx.reply("Couldn't kick off that sim — try again in a minute.");
+      } catch {
+        /* swallow */
+      }
+    }
+  });
+
   // Inline-keyboard taps from a trade echo.
   bot.callbackQuery(/^trade:(confirm|cancel):[0-9a-f-]{36}$/, async (ctx) => {
     try {
       await handleTradeCallback(ctx);
     } catch (err) {
       console.error('[telegram-bot] trade callback failed', err);
+      try {
+        await ctx.answerCallbackQuery({ text: 'Something broke.' });
+      } catch {
+        /* swallow */
+      }
+    }
+  });
+
+  // Inline-keyboard taps from a sim payment quote.
+  bot.callbackQuery(/^sim:(pay|cancel):[0-9a-f-]{36}$/, async (ctx) => {
+    try {
+      await handleSimCallback(ctx);
+    } catch (err) {
+      console.error('[telegram-bot] sim callback failed', err);
       try {
         await ctx.answerCallbackQuery({ text: 'Something broke.' });
       } catch {
