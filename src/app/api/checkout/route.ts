@@ -28,8 +28,14 @@ export async function POST(req: NextRequest) {
   // Rate-limit BEFORE the external Coinbase call — this endpoint is
   // unauthenticated, so without a cap anyone could flood it to spam junk
   // charges into our Commerce dashboard and bloat the payments table.
+  // failClosed: a DB hiccup must not uncap external charge creation (M-B).
   const ip = clientIpFromHeaders(req.headers);
-  if (!(await checkTradeRateLimit(supabase, rateLimitKey([ip, 'checkout']), { limit: 5 }))) {
+  if (
+    !(await checkTradeRateLimit(supabase, rateLimitKey([ip, 'checkout']), {
+      limit: 5,
+      failClosed: true,
+    }))
+  ) {
     return Response.json({ error: 'rate_limited' }, { status: 429 });
   }
 
@@ -42,6 +48,20 @@ export async function POST(req: NextRequest) {
     .maybeSingle();
   if (!session) {
     return Response.json({ error: 'session_not_found' }, { status: 404 });
+  }
+
+  // Per-session cap, independent of IP (x-forwarded-for is only trustworthy
+  // behind Vercel's edge): one session can't spawn unbounded pending charges.
+  // Confirmed payments don't count, so a paying user is never blocked.
+  const since = new Date(Date.now() - 15 * 60_000).toISOString();
+  const { count: pending } = await supabase
+    .from('payments')
+    .select('id', { count: 'exact', head: true })
+    .eq('session_id', sessionId)
+    .eq('status', 'created')
+    .gte('created_at', since);
+  if ((pending ?? 0) >= 3) {
+    return Response.json({ error: 'too_many_pending_charges' }, { status: 429 });
   }
 
   const charge = await createCharge({ sessionId, walletAddress });

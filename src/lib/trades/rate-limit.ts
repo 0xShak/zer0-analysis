@@ -20,17 +20,24 @@ const DEFAULT_WINDOW_SECONDS = 60;
 
 /**
  * Shared fixed-window limiter backed by the rate_limit_buckets table (migration
- * 0012). Returns true when the call is allowed. Fails OPEN on a DB error: a
- * limiter hiccup must not block legitimate trading, and abuse is still bounded
- * by the per-day Supabase caps elsewhere. Callers pass the service-role client.
+ * 0012). Returns true when the call is allowed. Callers pass the service-role
+ * client.
+ *
+ * Failure mode is per-caller. By default it fails OPEN: for /api/trade/* a
+ * limiter hiccup must not block legitimate trading, and abuse there is bounded
+ * by the per-day Supabase caps. Pass `failClosed: true` for routes where an
+ * open limiter is itself the abuse — e.g. /api/checkout (external Coinbase
+ * charge creation) and /api/polymarket/builder-sign (a signing oracle) — so a
+ * DB hiccup denies rather than uncaps them (audit2.md M-B / L-A).
  */
 export async function checkTradeRateLimit(
   supabase: SupabaseClient<Database>,
   key: string,
-  opts: { limit?: number; windowSeconds?: number } = {},
+  opts: { limit?: number; windowSeconds?: number; failClosed?: boolean } = {},
 ): Promise<boolean> {
   const limit = opts.limit ?? LIMIT;
   const windowSeconds = opts.windowSeconds ?? DEFAULT_WINDOW_SECONDS;
+  const onError = !opts.failClosed; // fail open unless told otherwise
   const nowEpoch = Math.floor(Date.now() / 1000);
   try {
     const { data, error } = await supabase.rpc('incr_rate_limit_window', {
@@ -39,14 +46,14 @@ export async function checkTradeRateLimit(
       now_epoch: nowEpoch,
     });
     if (error) {
-      console.error('[trade-rate-limit] rpc failed, allowing', error);
-      return true;
+      console.error(`[trade-rate-limit] rpc failed, ${onError ? 'allowing' : 'denying'}`, error);
+      return onError;
     }
     const count = typeof data === 'number' ? data : 0;
     return count <= limit;
   } catch (err) {
-    console.error('[trade-rate-limit] rpc threw, allowing', err);
-    return true;
+    console.error(`[trade-rate-limit] rpc threw, ${onError ? 'allowing' : 'denying'}`, err);
+    return onError;
   }
 }
 

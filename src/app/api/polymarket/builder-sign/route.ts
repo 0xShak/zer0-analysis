@@ -44,7 +44,13 @@ const MAX_BODY_LENGTH = 20_000;
 export async function POST(req: NextRequest) {
   const ip = clientIpFromHeaders(req.headers);
   const supabase = createAdminClient();
-  if (!(await checkTradeRateLimit(supabase, rateLimitKey([ip, 'builder-sign'])))) {
+  // failClosed: this signs with ZER0's builder HMAC, so a DB hiccup must not
+  // turn it into an unthrottled signing oracle / gas-sponsorship faucet (L-A).
+  if (
+    !(await checkTradeRateLimit(supabase, rateLimitKey([ip, 'builder-sign']), {
+      failClosed: true,
+    }))
+  ) {
     return NextResponse.json({ error: 'rate_limited' }, { status: 429 });
   }
 
