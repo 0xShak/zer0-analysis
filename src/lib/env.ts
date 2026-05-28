@@ -15,7 +15,16 @@ function need(name: string): string {
 export const env = {
   // Public — safe to expose to the browser. MUST use direct references.
   NEXT_PUBLIC_SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL ?? '',
-  NEXT_PUBLIC_SUPABASE_ANON_KEY: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? '',
+  // Public client key for the `anon` Postgres role. Newer Supabase projects
+  // issue this as a "publishable" key (sb_publishable_…); older ones call it the
+  // "anon" key. Accept either name so the browser/SSR client always gets a real
+  // key — both MUST be literal process.env references for Next's build-time
+  // inlining (see header note), and we use `||` so an empty string also falls
+  // through to the other name.
+  NEXT_PUBLIC_SUPABASE_ANON_KEY:
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
+    '',
   NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000',
 
   // Polygon JSON-RPC endpoint for server-side reads (allowance preflight,
