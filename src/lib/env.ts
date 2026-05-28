@@ -109,9 +109,13 @@ export const env = {
   ZER0_SIM_PAYMENT_ENABLED: process.env.ZER0_SIM_PAYMENT_ENABLED ?? 'false',
   // $ZER0 ERC-20 contract on Base. Needed only when the payment gate is on.
   get ZER0_TOKEN_ADDRESS() { return need('ZER0_TOKEN_ADDRESS'); },
-  // Where the per-sim fee goes — treasury address or a burn address. Needed
-  // only when the payment gate is on.
-  get ZER0_SIM_SINK_ADDRESS() { return need('ZER0_SIM_SINK_ADDRESS'); },
+  // Where the per-sim fee goes. Defaults to the canonical dead address so every
+  // sim fee is burned (Option A): $ZER0's burn() is owner-gated, so a holder
+  // can't self-burn — transferring to 0x…dEaD is the trustless, explorer-
+  // recognized burn. Override only to point fees at a treasury instead.
+  ZER0_SIM_SINK_ADDRESS:
+    process.env.ZER0_SIM_SINK_ADDRESS ??
+    '0x000000000000000000000000000000000000dEaD',
   // Human-readable $ZER0 amount charged per sim (e.g. '1000'). Multiplied by
   // 10^decimals at verify time. Needed only when the payment gate is on.
   get ZER0_SIM_PRICE() { return need('ZER0_SIM_PRICE'); },

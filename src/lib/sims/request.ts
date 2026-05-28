@@ -13,6 +13,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Database } from '../database.types';
 import { env } from '../env';
 import { inngest, simRequested } from '../inngest/client';
+import { quotedSimAmount } from '../web3/zer0-payment';
 import { insertPendingSim, updatePendingSim, type PendingSim } from './db';
 
 type Db = SupabaseClient<Database>;
@@ -32,6 +33,7 @@ export interface SimRequestInput {
 
 export interface SimQuote {
   priceZer0: string; // human token amount, e.g. "1000"
+  amountBaseUnits: string; // exact transfer amount in base units (price × 10^decimals)
   tokenAddress: string;
   sinkAddress: string;
 }
@@ -55,8 +57,12 @@ export async function createSimRequest(
     return { pendingSim, needsPayment: false };
   }
 
+  // quotedSimAmount() reads the token's on-chain decimals (cached) so the
+  // amount the browser transfers matches verifyZer0Payment() exactly.
+  const amountBaseUnits = await quotedSimAmount();
   const quote: SimQuote = {
     priceZer0: env.ZER0_SIM_PRICE,
+    amountBaseUnits: amountBaseUnits.toString(),
     tokenAddress: env.ZER0_TOKEN_ADDRESS,
     sinkAddress: env.ZER0_SIM_SINK_ADDRESS,
   };

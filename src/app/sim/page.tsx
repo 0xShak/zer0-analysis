@@ -2,17 +2,52 @@
 
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
+import { payForSim } from '@/lib/web3/sim-pay-browser';
 
-// Minimal web trigger for run-a-sim. Posts the scenario to /api/sim and
-// navigates to /sim/<pending_sim_id> to watch it run. Deliberately tiny — v1
-// reuses MiroShark's own watch + share-card pages for the result (§1).
+// Minimal web trigger for run-a-sim. Posts the scenario to /api/sim; when the
+// payment gate is on it returns a $ZER0 quote and we collect the fee in-browser
+// (injected wallet → ERC-20 transfer on Base → /api/sim/verify) before sending
+// the user to /sim/<id> to watch it run. Result UI reuses MiroShark's own watch
+// + share-card pages (§1).
+
+type EthereumProvider = {
+  request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
+};
+
+declare global {
+  interface Window {
+    ethereum?: EthereumProvider;
+  }
+}
+
+interface Quote {
+  priceZer0: string;
+  amountBaseUnits: string;
+  tokenAddress: string;
+  sinkAddress: string;
+}
+
+type PayStatus = 'idle' | 'paying' | 'verifying' | 'error';
+
+function errMessage(e: unknown): string {
+  if (typeof e === 'object' && e !== null) {
+    const obj = e as { code?: number; message?: string };
+    if (obj.code === 4001) return 'Payment rejected in wallet.';
+    if (typeof obj.message === 'string') return obj.message;
+  }
+  return e instanceof Error ? e.message : String(e);
+}
 
 export default function SimTriggerPage() {
   const router = useRouter();
   const [scenario, setScenario] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [quote, setQuote] = useState<{ priceZer0: string } | null>(null);
+  const [quote, setQuote] = useState<Quote | null>(null);
+  const [pendingSimId, setPendingSimId] = useState<string | null>(null);
+  const [address, setAddress] = useState<string | null>(null);
+  const [payStatus, setPayStatus] = useState<PayStatus>('idle');
+  const [payError, setPayError] = useState<string | null>(null);
 
   async function submit() {
     setError(null);
@@ -33,8 +68,8 @@ export default function SimTriggerPage() {
         return;
       }
       if (data.needs_payment) {
-        // Web payment UX (WalletConnect on Base) ships with the payment gate.
         setQuote(data.quote);
+        setPendingSimId(data.pending_sim_id);
         return;
       }
       router.push(`/sim/${data.pending_sim_id}`);
@@ -44,6 +79,64 @@ export default function SimTriggerPage() {
       setBusy(false);
     }
   }
+
+  async function connect() {
+    setPayError(null);
+    const ethereum = typeof window !== 'undefined' ? window.ethereum : undefined;
+    if (!ethereum) {
+      setPayError('No wallet found. Install MetaMask/Coinbase Wallet, or run /sim in Telegram.');
+      return;
+    }
+    try {
+      const accounts = (await ethereum.request({
+        method: 'eth_requestAccounts',
+      })) as string[];
+      if (accounts[0]) setAddress(accounts[0]);
+    } catch (e) {
+      setPayError(errMessage(e));
+    }
+  }
+
+  async function pay() {
+    if (!quote || !pendingSimId || !address) return;
+    const ethereum = typeof window !== 'undefined' ? window.ethereum : undefined;
+    if (!ethereum) {
+      setPayError('No wallet found.');
+      return;
+    }
+    setPayError(null);
+    setPayStatus('paying');
+    try {
+      const txHash = await payForSim({
+        ethereum,
+        from: address,
+        tokenAddress: quote.tokenAddress,
+        sinkAddress: quote.sinkAddress,
+        amountBaseUnits: quote.amountBaseUnits,
+      });
+
+      setPayStatus('verifying');
+      const res = await fetch('/api/sim/verify', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ pending_sim_id: pendingSimId, tx_hash: txHash }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.ok) {
+        setPayStatus('error');
+        setPayError(
+          `Payment didn't verify (${data?.reason ?? `status ${res.status}`}). If it went through, keep this tx: ${txHash}`,
+        );
+        return;
+      }
+      router.push(`/sim/${pendingSimId}`);
+    } catch (e) {
+      setPayStatus('error');
+      setPayError(errMessage(e));
+    }
+  }
+
+  const paying = payStatus === 'paying' || payStatus === 'verifying';
 
   return (
     <main style={styles.wrap}>
@@ -58,17 +151,41 @@ export default function SimTriggerPage() {
         placeholder="e.g. What happens to BTC if the Fed cuts rates in March?"
         rows={4}
         style={styles.textarea}
-        disabled={busy}
+        disabled={busy || quote !== null}
       />
-      <button onClick={submit} disabled={busy} style={styles.button}>
-        {busy ? 'Starting…' : 'Run sim'}
-      </button>
+      {!quote && (
+        <button onClick={submit} disabled={busy} style={styles.button}>
+          {busy ? 'Starting…' : 'Run sim'}
+        </button>
+      )}
       {error && <p style={styles.error}>{error}</p>}
+
       {quote && (
-        <p style={styles.note}>
-          This sim costs {quote.priceZer0} $ZER0 on Base. Connect a wallet to
-          pay — web payment is rolling out shortly.
-        </p>
+        <div style={styles.payBox}>
+          <p style={styles.payLine}>
+            One swarm sim costs <strong>{quote.priceZer0} $ZER0</strong> on Base.
+            The fee is burned 🔥 (sent to the dead address).
+          </p>
+          {!address ? (
+            <button onClick={connect} style={styles.button}>
+              Connect wallet
+            </button>
+          ) : (
+            <>
+              <p style={styles.addr}>
+                {address.slice(0, 6)}…{address.slice(-4)} connected
+              </p>
+              <button onClick={pay} disabled={paying} style={styles.button}>
+                {payStatus === 'paying'
+                  ? 'Confirm in wallet…'
+                  : payStatus === 'verifying'
+                    ? 'Verifying on Base…'
+                    : `Pay ${quote.priceZer0} $ZER0 & run`}
+              </button>
+            </>
+          )}
+          {payError && <p style={styles.error}>{payError}</p>}
+        </div>
       )}
     </main>
   );
@@ -105,6 +222,19 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 15,
     cursor: 'pointer',
   },
-  error: { color: '#ff6b6b', marginTop: 14 },
-  note: { color: '#ffd166', marginTop: 14, lineHeight: 1.6 },
+  payBox: {
+    marginTop: 24,
+    padding: '18px 20px',
+    background: '#121622',
+    border: '1px solid #232a3b',
+    borderRadius: 12,
+  },
+  payLine: { margin: '0 0 8px', lineHeight: 1.6 },
+  addr: {
+    margin: '4px 0 0',
+    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+    fontSize: 12,
+    color: '#5eead4',
+  },
+  error: { color: '#ff6b6b', marginTop: 14, lineHeight: 1.6 },
 };
