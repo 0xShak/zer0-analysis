@@ -112,24 +112,24 @@ export async function processSimPayment(
     return;
   }
 
-  // Ask the wallet to send. A timeout / relay drop is NO LONGER fatal: the
-  // wallet may still broadcast the transfer, and the durable verifier scans
-  // Base for it regardless. Capture the hash if it comes back (fast path), else
-  // null — we never depend on it.
-  let txHash: string | null = null;
-  try {
-    txHash = await sendBaseTransfer({
-      topic: session.sessionTopic,
-      from: session.eoaAddress,
-      to: getAddress(env.ZER0_TOKEN_ADDRESS),
-      data,
-    });
-  } catch (err) {
+  // Kick off the wallet payment request, but DO NOT await it before handing off:
+  // the WalletConnect round-trip is exactly what's unreliable, and blocking on it
+  // delayed the durable verifier by up to the send timeout (~2 min) — the scan
+  // only started once the wallet finally responded or timed out. Fire the event
+  // FIRST so the chain scan begins within seconds of Pay; it catches the transfer
+  // whenever it lands, regardless of if/when the wallet responds. The request is
+  // dispatched the moment we call sendBaseTransfer; we just don't wait on it.
+  void sendBaseTransfer({
+    topic: session.sessionTopic,
+    from: session.eoaAddress,
+    to: getAddress(env.ZER0_TOKEN_ADDRESS),
+    data,
+  }).catch((err) => {
     console.warn(
-      '[telegram-bot] wallet send returned no hash (timeout/drop) — handing off to chain scan',
+      '[telegram-bot] WC send did not resolve (timeout/drop) — chain scan covers it',
       err,
     );
-  }
+  });
 
   await inngest.send(
     simPaymentSubmitted.create({
@@ -138,7 +138,9 @@ export async function processSimPayment(
       sink: pending.pay_to_address,
       amountBaseUnits: amount.toString(),
       fromBlock: fromBlock.toString(),
-      txHash,
+      // The TG path never depends on a wallet-returned hash; the scan is the
+      // source of truth. (The web /api/sim/verify path still uses the fast path.)
+      txHash: null,
     }),
   );
 
