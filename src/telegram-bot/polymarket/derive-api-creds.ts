@@ -159,21 +159,15 @@ export async function deriveClobApiCreds(
     POLY_NONCE: nonce.toString(),
   };
 
-  console.error('[derive-creds DEBUG] L1 headers', {
-    POLY_ADDRESS: headers.POLY_ADDRESS,
-    POLY_TIMESTAMP: headers.POLY_TIMESTAMP,
-    POLY_NONCE: headers.POLY_NONCE,
-    POLY_SIGNATURE_len: headers.POLY_SIGNATURE.length,
-  });
-
   // 1. Try create. A successful create returns the full creds; an "already
   //    exists" path may return ok-but-empty, in which case we derive below.
   const createRes = await fetchImpl(`${host}${CREATE_PATH}`, {
     method: 'POST',
     headers,
   });
+  // NB: createText / deriveText are the raw L2 credential bodies
+  // ({apiKey, secret, passphrase}) — never log them (audit2.md H-A).
   const createText = await createRes.text();
-  console.error('[derive-creds DEBUG] create', createRes.status, createText);
   if (createRes.ok) {
     const parsed = safeParse(createText);
     if (parsed?.apiKey && parsed.secret && parsed.passphrase) {
@@ -191,7 +185,6 @@ export async function deriveClobApiCreds(
     headers,
   });
   const deriveText = await deriveRes.text();
-  console.error('[derive-creds DEBUG] derive', deriveRes.status, deriveText);
   if (!deriveRes.ok) {
     throw new DeriveApiCredsError(deriveRes.status, deriveText);
   }

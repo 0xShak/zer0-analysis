@@ -137,23 +137,12 @@ export async function postOrder(args: PostOrderArgs): Promise<PostOrderResponse>
     });
   }
 
-  console.error('[post-order DEBUG] POST', `${HOST}${PATH}`);
-  console.error('[post-order DEBUG] headers', {
-    'Content-Type': headers['Content-Type'],
-    POLY_ADDRESS: headers.POLY_ADDRESS,
-    POLY_TIMESTAMP: headers.POLY_TIMESTAMP,
-    POLY_API_KEY_len: headers.POLY_API_KEY?.length ?? 0,
-    POLY_SIGNATURE_len: headers.POLY_SIGNATURE?.length ?? 0,
-    POLY_PASSPHRASE_len: headers.POLY_PASSPHRASE?.length ?? 0,
-  });
-  console.error('[post-order DEBUG] body', body);
   const res = await fetchImpl(`${HOST}${PATH}`, {
     method: 'POST',
     headers,
     body,
   });
   const text = await res.text();
-  console.error('[post-order DEBUG] response', res.status, text);
   if (!res.ok) {
     let parsed: PostOrderResponse | null = null;
     try {
