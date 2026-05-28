@@ -2,7 +2,7 @@ import { type NextRequest } from 'next/server';
 import { z } from 'zod';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { clientIpFromHeaders, computeFingerprint } from '@/lib/chat/fingerprint';
-import { checkRateLimit } from '@/lib/chat/rate-limit';
+import { checkRateLimit, rateLimitIdentity } from '@/lib/chat/rate-limit';
 import {
   CHAT_GROUND_RULES,
   formatRecentWorkForSystem,
@@ -122,7 +122,10 @@ export async function POST(req: NextRequest) {
     }
 
     // ---- rate limit ----
-    const rate = await checkRateLimit(supabase, fingerprint, userId);
+    // Key on JWT-verified user id (authed) or client IP (anon) — NOT the
+    // sid/UA fingerprint, which the caller can rotate to reset their quota.
+    const rlKey = rateLimitIdentity({ userId, ip });
+    const rate = await checkRateLimit(supabase, rlKey, userId);
     if (!rate.allowed) {
       const entitled = await hasActiveEntitlement(supabase, {
         sessionId,

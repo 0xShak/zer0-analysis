@@ -2,7 +2,7 @@ import { type NextRequest } from 'next/server';
 import { z } from 'zod';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { clientIpFromHeaders, computeFingerprint } from '@/lib/chat/fingerprint';
-import { checkRateLimit } from '@/lib/chat/rate-limit';
+import { checkRateLimit, rateLimitIdentity } from '@/lib/chat/rate-limit';
 import { createSimRequest } from '@/lib/sims/request';
 
 // POST /api/sim — kick off a MiroShark sim from the web. Mirrors /api/chat's
@@ -100,7 +100,10 @@ export async function POST(req: NextRequest) {
     }
 
     // ---- rate limit (shares the web daily quota; sims are expensive) ----
-    const rate = await checkRateLimit(supabase, fingerprint, userId);
+    // Key on JWT-verified user id (authed) or client IP (anon) — NOT the
+    // sid/UA fingerprint, which the caller can rotate to reset their quota.
+    const rlKey = rateLimitIdentity({ userId, ip });
+    const rate = await checkRateLimit(supabase, rlKey, userId);
     if (!rate.allowed) {
       return Response.json(
         { error: 'rate_limited', message: "You've hit today's limit." },

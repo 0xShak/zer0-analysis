@@ -1,9 +1,11 @@
 import { type NextRequest } from 'next/server';
 import { z } from 'zod';
+import { getAddress, recoverMessageAddress, type Hex } from 'viem';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { getPendingSim } from '@/lib/sims/db';
 import { isSimPaymentEnabled, markSimPaidAndEnqueue } from '@/lib/sims/request';
 import { quotedSimAmount, verifyZer0Payment } from '@/lib/web3/zer0-payment';
+import { simPaymentAuthMessage } from '@/lib/web3/sim-payment-auth';
 
 // POST /api/sim/verify — web payment confirmation. The browser sends the
 // $ZER0 transfer on Base (WalletConnect), waits for it to confirm, then posts
@@ -18,6 +20,11 @@ export const maxDuration = 60;
 const Body = z.object({
   pending_sim_id: z.string().uuid(),
   tx_hash: z.string().regex(/^0x[0-9a-fA-F]{64}$/),
+  // Payer proof: the connected wallet signs simPaymentAuthMessage(pending_sim_id)
+  // and we require the on-chain transfer to originate from this same address —
+  // so a public payment tx can't be claimed by anyone but the wallet that paid.
+  from_address: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
+  signature: z.string().regex(/^0x[0-9a-fA-F]+$/),
 });
 
 export async function POST(req: NextRequest) {
@@ -31,8 +38,24 @@ export async function POST(req: NextRequest) {
       { status: 400 },
     );
   }
-  const { pending_sim_id, tx_hash } = parsed.data;
+  const { pending_sim_id, tx_hash, from_address, signature } = parsed.data;
   const supabase = createAdminClient();
+
+  // Recover the payer from the signature and require it to match the claimed
+  // address. This is the wallet the on-chain transfer must originate from.
+  let payer: string;
+  try {
+    const recovered = await recoverMessageAddress({
+      message: simPaymentAuthMessage(pending_sim_id),
+      signature: signature as Hex,
+    });
+    if (getAddress(recovered) !== getAddress(from_address)) {
+      return Response.json({ ok: false, reason: 'bad_signature' }, { status: 401 });
+    }
+    payer = getAddress(from_address);
+  } catch {
+    return Response.json({ ok: false, reason: 'bad_signature' }, { status: 401 });
+  }
 
   const pending = await getPendingSim(supabase, pending_sim_id);
   if (!pending) {
@@ -49,6 +72,9 @@ export async function POST(req: NextRequest) {
   const result = await verifyZer0Payment({
     txHash: tx_hash,
     expectedTo: pending.pay_to_address,
+    // Bind the transfer's sender to the wallet that proved control above — the
+    // fix for the payment-hijack vector (web path previously omitted this).
+    expectedFrom: payer,
     expectedAmount: await quotedSimAmount(),
     // Client confirmed the tx before calling — keep the wait short so the route
     // stays under maxDuration.

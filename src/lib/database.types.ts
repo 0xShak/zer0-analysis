@@ -286,6 +286,12 @@ export type Database = {
         Update: { fingerprint?: string; day?: string; count?: number };
         Relationships: [];
       };
+      rate_limit_buckets: {
+        Row: { bucket_key: string; window_start: number; count: number };
+        Insert: { bucket_key: string; window_start: number; count?: number };
+        Update: { bucket_key?: string; window_start?: number; count?: number };
+        Relationships: [];
+      };
       market_scans: {
         Row: {
           condition_id: string;
@@ -820,6 +826,10 @@ export type Database = {
       increment_rate_limit: {
         Args: { fp: string; today: string };
         Returns: { fingerprint: string; day: string; count: number };
+      };
+      incr_rate_limit_window: {
+        Args: { k: string; window_seconds: number; now_epoch: number };
+        Returns: number;
       };
     };
     Enums: {

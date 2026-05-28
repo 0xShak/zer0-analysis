@@ -19,7 +19,7 @@ import type { NextRequest } from 'next/server';
 import { utils as ethersUtils } from 'ethers';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { clientIpFromHeaders } from '@/lib/chat/fingerprint';
-import { rateLimit, rateLimitKey } from '@/lib/trades/rate-limit';
+import { checkTradeRateLimit, rateLimitKey } from '@/lib/trades/rate-limit';
 import {
   AllRpcsFailedError,
   getPusdAllowance,
@@ -57,8 +57,9 @@ export async function GET(req: NextRequest) {
     return Response.json({ error: 'invalid_address' }, { status: 400 });
   }
 
+  const supabase = createAdminClient();
   const ip = clientIpFromHeaders(req.headers);
-  if (!rateLimit(rateLimitKey([address.toLowerCase(), ip, 'allowance']))) {
+  if (!(await checkTradeRateLimit(supabase, rateLimitKey([address.toLowerCase(), ip, 'allowance'])))) {
     return Response.json({ error: 'rate_limited' }, { status: 429 });
   }
 
@@ -68,7 +69,6 @@ export async function GET(req: NextRequest) {
   let negRisk = false;
   const recId = req.nextUrl.searchParams.get('recommendationId');
   if (recId && UUID_RE.test(recId)) {
-    const supabase = createAdminClient();
     const { data: rec } = await supabase
       .from('trade_recommendations')
       .select('neg_risk')
