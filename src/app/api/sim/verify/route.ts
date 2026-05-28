@@ -4,6 +4,9 @@ import { createAdminClient } from '@/lib/supabase/admin';
 import { getPendingSim } from '@/lib/sims/db';
 import { isSimPaymentEnabled, markSimPaidAndEnqueue } from '@/lib/sims/request';
 import { quotedSimAmount, verifyZer0Payment } from '@/lib/web3/zer0-payment';
+import { recoverSimPayer } from '@/lib/web3/verify-sim-payer';
+import { clientIpFromHeaders } from '@/lib/chat/fingerprint';
+import { checkTradeRateLimit, rateLimitKey } from '@/lib/trades/rate-limit';
 
 // POST /api/sim/verify — web payment confirmation. The browser sends the
 // $ZER0 transfer on Base (WalletConnect), waits for it to confirm, then posts
@@ -18,6 +21,11 @@ export const maxDuration = 60;
 const Body = z.object({
   pending_sim_id: z.string().uuid(),
   tx_hash: z.string().regex(/^0x[0-9a-fA-F]{64}$/),
+  // Payer proof: the connected wallet signs simPaymentAuthMessage(pending_sim_id)
+  // and we require the on-chain transfer to originate from this same address —
+  // so a public payment tx can't be claimed by anyone but the wallet that paid.
+  from_address: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
+  signature: z.string().regex(/^0x[0-9a-fA-F]+$/),
 });
 
 export async function POST(req: NextRequest) {
@@ -31,8 +39,31 @@ export async function POST(req: NextRequest) {
       { status: 400 },
     );
   }
-  const { pending_sim_id, tx_hash } = parsed.data;
+  const { pending_sim_id, tx_hash, from_address, signature } = parsed.data;
   const supabase = createAdminClient();
+
+  // Shed floods before the expensive path (signature recovery + a 30s receipt
+  // wait + log reads): unauthenticated callers could otherwise pin serverless
+  // time and drain the RPC quota. A legit payer verifies once per sim.
+  const ip = clientIpFromHeaders(req.headers);
+  if (
+    !(await checkTradeRateLimit(supabase, rateLimitKey([ip, 'sim-verify']), {
+      limit: 10,
+    }))
+  ) {
+    return Response.json({ error: 'rate_limited' }, { status: 429 });
+  }
+
+  // Recover the payer from the signature and require it to match the claimed
+  // address. This is the wallet the on-chain transfer must originate from.
+  const payer = await recoverSimPayer({
+    pendingSimId: pending_sim_id,
+    fromAddress: from_address,
+    signature,
+  });
+  if (!payer) {
+    return Response.json({ ok: false, reason: 'bad_signature' }, { status: 401 });
+  }
 
   const pending = await getPendingSim(supabase, pending_sim_id);
   if (!pending) {
@@ -49,6 +80,9 @@ export async function POST(req: NextRequest) {
   const result = await verifyZer0Payment({
     txHash: tx_hash,
     expectedTo: pending.pay_to_address,
+    // Bind the transfer's sender to the wallet that proved control above — the
+    // fix for the payment-hijack vector (web path previously omitted this).
+    expectedFrom: payer,
     expectedAmount: await quotedSimAmount(),
     // Client confirmed the tx before calling — keep the wait short so the route
     // stays under maxDuration.

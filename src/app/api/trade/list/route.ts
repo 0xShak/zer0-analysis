@@ -11,7 +11,7 @@ import type { NextRequest } from 'next/server';
 import { utils as ethersUtils } from 'ethers';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { clientIpFromHeaders } from '@/lib/chat/fingerprint';
-import { rateLimit, rateLimitKey } from '@/lib/trades/rate-limit';
+import { checkTradeRateLimit, rateLimitKey } from '@/lib/trades/rate-limit';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -29,12 +29,12 @@ export async function GET(req: NextRequest) {
     return Response.json({ error: 'invalid_address' }, { status: 400 });
   }
 
+  const supabase = createAdminClient();
   const ip = clientIpFromHeaders(req.headers);
-  if (!rateLimit(rateLimitKey([address.toLowerCase(), ip, 'list']))) {
+  if (!(await checkTradeRateLimit(supabase, rateLimitKey([address.toLowerCase(), ip, 'list'])))) {
     return Response.json({ error: 'rate_limited' }, { status: 429 });
   }
 
-  const supabase = createAdminClient();
   // Exclude 'pending' and 'prepared' — those are pre-submit internal states
   // that accumulate every time a user clicks execute and then cancels the
   // signature. They have no value in a user-facing activity feed.

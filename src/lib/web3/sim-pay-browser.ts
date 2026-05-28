@@ -8,8 +8,9 @@
 // before firing the run — so a wallet that lies about success can't sneak a
 // free sim through.
 
-import { encodeFunctionData, parseAbi } from 'viem';
+import { encodeFunctionData, parseAbi, stringToHex } from 'viem';
 import { waitForReceipt } from './approve';
+import { simPaymentAuthMessage } from './sim-payment-auth';
 
 type EthereumProvider = {
   request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
@@ -63,6 +64,26 @@ export interface PayForSimArgs {
   sinkAddress: string;
   /** Exact transfer amount in base units (quote.amountBaseUnits). */
   amountBaseUnits: string;
+}
+
+/**
+ * Sign the payment-authorization message with the paying wallet, BEFORE sending
+ * the transfer (gasless, so a declined signature costs the user nothing). The
+ * verify route recovers this signature and requires the on-chain transfer's
+ * `from` to equal the signer, so a third party can't claim someone else's
+ * public payment tx for their own sim. Bound to the pending-sim id, so a
+ * signature can't be reused across sims.
+ */
+export async function signSimPayment(args: {
+  ethereum: EthereumProvider;
+  from: string;
+  pendingSimId: string;
+}): Promise<string> {
+  const message = simPaymentAuthMessage(args.pendingSimId);
+  return (await args.ethereum.request({
+    method: 'personal_sign',
+    params: [stringToHex(message), args.from],
+  })) as string;
 }
 
 /**

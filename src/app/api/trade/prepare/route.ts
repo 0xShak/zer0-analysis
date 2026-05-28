@@ -3,7 +3,7 @@ import { utils as ethersUtils } from 'ethers';
 import { createAdminClient } from '@/lib/supabase/admin';
 import type { Json } from '@/lib/database.types';
 import { clientIpFromHeaders } from '@/lib/chat/fingerprint';
-import { rateLimit, rateLimitKey } from '@/lib/trades/rate-limit';
+import { checkTradeRateLimit, rateLimitKey } from '@/lib/trades/rate-limit';
 import { PrepareBody } from '@/lib/trades/validators';
 import {
   buildTypedData,
@@ -58,9 +58,9 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // ---- rate limit (30/min per user+IP) ----
+  // ---- rate limit (30/min per user+IP, shared across instances) ----
   const ip = clientIpFromHeaders(req.headers);
-  if (!rateLimit(rateLimitKey([userId, ip, 'prepare']))) {
+  if (!(await checkTradeRateLimit(supabase, rateLimitKey([userId, ip, 'prepare'])))) {
     return Response.json({ error: 'rate_limited' }, { status: 429 });
   }
 

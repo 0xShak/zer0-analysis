@@ -23,6 +23,26 @@ export async function POST(req: NextRequest) {
     const sessionId = data.metadata?.sessionId ?? null;
     const walletAddress = data.metadata?.walletAddress;
 
+    // Idempotency: Coinbase retries this webhook. Flip the payment to confirmed
+    // only if it isn't already, and grant the entitlement only when THIS
+    // delivery won that transition — otherwise retries stacked duplicate
+    // 30-day entitlement rows. The .neq guard + .select makes the flip atomic
+    // under concurrent deliveries (only one sees rows returned).
+    const { data: flipped, error: flipErr } = await supabase
+      .from('payments')
+      .update({ status: 'confirmed', confirmed_at: new Date().toISOString() })
+      .eq('coinbase_charge_id', data.id)
+      .neq('status', 'confirmed')
+      .select('id');
+    if (flipErr) {
+      // Transient DB error — 500 so Coinbase retries.
+      return new Response('db error', { status: 500 });
+    }
+    if (!flipped || flipped.length === 0) {
+      // Already confirmed (a retry) or an unknown charge — idempotent no-op.
+      return new Response('ok');
+    }
+
     let userId: string | null = null;
     if (walletAddress) {
       const { data: user } = await supabase
@@ -33,17 +53,21 @@ export async function POST(req: NextRequest) {
       userId = user?.id ?? null;
     }
 
-    await supabase.from('entitlements').insert({
+    const { error: grantErr } = await supabase.from('entitlements').insert({
       user_id: userId,
       session_id: sessionId,
       unlocked_until: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
       source: 'coinbase_commerce',
     });
-
-    await supabase
-      .from('payments')
-      .update({ status: 'confirmed', confirmed_at: new Date().toISOString() })
-      .eq('coinbase_charge_id', data.id);
+    if (grantErr) {
+      // Compensate: roll the payment back so Coinbase's retry re-processes and
+      // re-grants — never leave a paid user without their entitlement.
+      await supabase
+        .from('payments')
+        .update({ status: 'created', confirmed_at: null })
+        .eq('coinbase_charge_id', data.id);
+      return new Response('grant failed', { status: 500 });
+    }
   }
 
   return new Response('ok');

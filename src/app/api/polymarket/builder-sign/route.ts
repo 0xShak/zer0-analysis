@@ -17,8 +17,9 @@ import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
 import { buildHmacSignature } from '@polymarket/builder-signing-sdk';
 import { env } from '@/lib/env';
+import { createAdminClient } from '@/lib/supabase/admin';
 import { clientIpFromHeaders } from '@/lib/chat/fingerprint';
-import { rateLimit, rateLimitKey } from '@/lib/trades/rate-limit';
+import { checkTradeRateLimit, rateLimitKey } from '@/lib/trades/rate-limit';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -30,9 +31,20 @@ interface SignPayload {
   timestamp?: number;
 }
 
+// This route signs (method, path, body) with ZER0's builder HMAC secret. Left
+// open it's a signing oracle: anyone could mint builder-authenticated requests
+// for arbitrary relayer endpoints (and abuse ZER0's gas-sponsored builder
+// relationship). The relayer SDK only ever attaches builder auth to these two
+// requests — every other endpoint it calls (/nonce, /relay-payload,
+// /transaction, /deployed) goes out unauthenticated — so restrict to them.
+const ALLOWED_REQUESTS = new Set(['POST /submit', 'GET /transactions']);
+// Relayer submit payloads are a few KB; refuse to sign anything oversized.
+const MAX_BODY_LENGTH = 20_000;
+
 export async function POST(req: NextRequest) {
   const ip = clientIpFromHeaders(req.headers);
-  if (!rateLimit(rateLimitKey([ip, 'builder-sign']))) {
+  const supabase = createAdminClient();
+  if (!(await checkTradeRateLimit(supabase, rateLimitKey([ip, 'builder-sign'])))) {
     return NextResponse.json({ error: 'rate_limited' }, { status: 429 });
   }
 
@@ -48,6 +60,15 @@ export async function POST(req: NextRequest) {
       { error: 'method_and_path_required' },
       { status: 400 },
     );
+  }
+
+  // Allowlist on (method, path) — match the path sans query string.
+  const pathOnly = path.split('?')[0];
+  if (!ALLOWED_REQUESTS.has(`${method.toUpperCase()} ${pathOnly}`)) {
+    return NextResponse.json({ error: 'request_not_allowed' }, { status: 403 });
+  }
+  if (typeof body === 'string' && body.length > MAX_BODY_LENGTH) {
+    return NextResponse.json({ error: 'body_too_large' }, { status: 413 });
   }
 
   let apiKey: string;

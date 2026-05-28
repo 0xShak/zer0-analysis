@@ -2,7 +2,7 @@
 
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
-import { payForSim } from '@/lib/web3/sim-pay-browser';
+import { payForSim, signSimPayment } from '@/lib/web3/sim-pay-browser';
 
 // Minimal web trigger for run-a-sim. Posts the scenario to /api/sim; when the
 // payment gate is on it returns a $ZER0 quote and we collect the fee in-browser
@@ -107,6 +107,32 @@ export default function SimTriggerPage() {
     setPayError(null);
     setPayStatus('paying');
     try {
+      // Prove control of the paying wallet first (gasless). The server binds
+      // on-chain verification to this signer, so nobody can claim our payment.
+      const signature = await signSimPayment({
+        ethereum,
+        from: address,
+        pendingSimId,
+      });
+
+      // Arm the durable on-chain watcher BEFORE paying, so the sim still runs
+      // if this tab closes after the transfer. Best-effort: /api/sim/verify
+      // below is the fast path. Must precede payForSim so the scan's block
+      // lower bound is captured before the tx is sent.
+      try {
+        await fetch('/api/sim/pay-intent', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            pending_sim_id: pendingSimId,
+            from_address: address,
+            signature,
+          }),
+        });
+      } catch {
+        // Non-fatal — the fast-path verify still completes the common case.
+      }
+
       const txHash = await payForSim({
         ethereum,
         from: address,
@@ -119,7 +145,12 @@ export default function SimTriggerPage() {
       const res = await fetch('/api/sim/verify', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ pending_sim_id: pendingSimId, tx_hash: txHash }),
+        body: JSON.stringify({
+          pending_sim_id: pendingSimId,
+          tx_hash: txHash,
+          from_address: address,
+          signature,
+        }),
       });
       const data = await res.json().catch(() => null);
       if (!res.ok || !data?.ok) {

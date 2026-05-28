@@ -16,7 +16,7 @@ import type { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { clientIpFromHeaders } from '@/lib/chat/fingerprint';
-import { rateLimit, rateLimitKey } from '@/lib/trades/rate-limit';
+import { checkTradeRateLimit, rateLimitKey } from '@/lib/trades/rate-limit';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -56,12 +56,12 @@ export async function POST(req: NextRequest) {
   }
   const { tradeId, outcome } = parsed.data;
 
+  const supabase = createAdminClient();
   const ip = clientIpFromHeaders(req.headers);
-  if (!rateLimit(rateLimitKey([ip, tradeId, 'notify']))) {
+  if (!(await checkTradeRateLimit(supabase, rateLimitKey([ip, tradeId, 'notify'])))) {
     return Response.json({ error: 'rate_limited' }, { status: 429 });
   }
 
-  const supabase = createAdminClient();
   const { data: trade, error: tradeErr } = await supabase
     .from('trades')
     .select('id, status')
