@@ -10,6 +10,19 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Database } from '../../lib/database.types';
 import type { ApiCreds } from '../polymarket/post-order';
+import {
+  decryptSecret,
+  encryptSecret,
+  isEncryptedSecret,
+} from '../../lib/crypto/secret-box';
+
+// Encrypted at rest with AES-256-GCM (audit2.md L3). Read stays back-compatible
+// with any pre-migration plaintext value so a rollout can't break live users
+// mid-flight; the 0014 migration drops old plaintext rows to force a clean
+// re-/connect, after which every stored value is an encrypted envelope.
+function readSecret(value: string): string {
+  return isEncryptedSecret(value) ? decryptSecret(value) : value;
+}
 
 export interface ClobApiCredsRow {
   telegramUserId: number;
@@ -31,14 +44,18 @@ export async function saveClobApiCreds(
     .maybeSingle();
   if (selErr) throw selErr;
 
+  const encrypted = {
+    api_key: encryptSecret(row.creds.apiKey),
+    api_secret: encryptSecret(row.creds.secret),
+    api_passphrase: encryptSecret(row.creds.passphrase),
+  };
+
   if (existing) {
     const { error: updErr } = await supabase
       .from('tg_clob_api_creds')
       .update({
         signer_address: row.signerAddress,
-        api_key: row.creds.apiKey,
-        api_secret: row.creds.secret,
-        api_passphrase: row.creds.passphrase,
+        ...encrypted,
         updated_at: new Date().toISOString(),
       })
       .eq('telegram_user_id', row.telegramUserId);
@@ -49,9 +66,7 @@ export async function saveClobApiCreds(
   const { error: insErr } = await supabase.from('tg_clob_api_creds').insert({
     telegram_user_id: row.telegramUserId,
     signer_address: row.signerAddress,
-    api_key: row.creds.apiKey,
-    api_secret: row.creds.secret,
-    api_passphrase: row.creds.passphrase,
+    ...encrypted,
   });
   if (insErr) throw insErr;
 }
@@ -71,9 +86,9 @@ export async function getClobApiCreds(
     telegramUserId: data.telegram_user_id,
     signerAddress: data.signer_address,
     creds: {
-      apiKey: data.api_key,
-      secret: data.api_secret,
-      passphrase: data.api_passphrase,
+      apiKey: readSecret(data.api_key),
+      secret: readSecret(data.api_secret),
+      passphrase: readSecret(data.api_passphrase),
     },
   };
 }

@@ -13,6 +13,28 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Database, Json } from '../../lib/database.types';
+import { decryptSecret, encryptSecret } from '../../lib/crypto/secret-box';
+
+// WC SignClient session material (keychain symKeys, session state) is secret, so
+// the stored `value` is encrypted at rest (audit2.md L3): we keep a tiny
+// { enc: <envelope> } jsonb wrapper instead of the raw value. Reads stay
+// back-compatible with any pre-migration plaintext row (returned as-is), so a
+// rollout can't break a live SignClient mid-session; the 0014 migration clears
+// old rows to force a clean re-/connect.
+function encodeValue(value: unknown): Json {
+  return { enc: encryptSecret(JSON.stringify(value ?? null)) } as unknown as Json;
+}
+function decodeValue<T>(value: unknown): T {
+  if (
+    value &&
+    typeof value === 'object' &&
+    'enc' in value &&
+    typeof (value as { enc: unknown }).enc === 'string'
+  ) {
+    return JSON.parse(decryptSecret((value as { enc: string }).enc)) as T;
+  }
+  return value as T; // pre-migration plaintext
+}
 
 // Structural copy of @walletconnect/keyvaluestorage's IKeyValueStorage so
 // the adapter can be typechecked without the runtime dep.
@@ -40,7 +62,7 @@ export class PostgresKeyValueStorage implements IKeyValueStorage {
       .from('walletconnect_kv')
       .select('key,value');
     if (error) throw error;
-    return (data ?? []).map((r) => [r.key, r.value as unknown as T]);
+    return (data ?? []).map((r) => [r.key, decodeValue<T>(r.value)]);
   }
 
   async getItem<T = unknown>(key: string): Promise<T | undefined> {
@@ -51,7 +73,7 @@ export class PostgresKeyValueStorage implements IKeyValueStorage {
       .maybeSingle();
     if (error) throw error;
     if (!data) return undefined;
-    return data.value as unknown as T;
+    return decodeValue<T>(data.value);
   }
 
   async setItem<T = unknown>(key: string, value: T): Promise<void> {
@@ -66,16 +88,17 @@ export class PostgresKeyValueStorage implements IKeyValueStorage {
       .maybeSingle();
     if (selErr) throw selErr;
     const now = new Date().toISOString();
+    const stored = encodeValue(value);
     if (existing) {
       const { error: updErr } = await this.supabase
         .from('walletconnect_kv')
-        .update({ value: value as unknown as Json, updated_at: now })
+        .update({ value: stored, updated_at: now })
         .eq('key', key);
       if (updErr) throw updErr;
     } else {
       const { error: insErr } = await this.supabase
         .from('walletconnect_kv')
-        .insert({ key, value: value as unknown as Json, updated_at: now });
+        .insert({ key, value: stored, updated_at: now });
       if (insErr) throw insErr;
     }
   }

@@ -48,6 +48,12 @@ export const env = {
   // Server-only — readers should call these via getters below to surface
   // a useful error when the var is unset during a request.
   get SUPABASE_SERVICE_KEY() { return need('SUPABASE_SERVICE_KEY'); },
+  // AES-256-GCM key for encrypting secrets at rest — per-user CLOB creds and the
+  // WalletConnect session store (audit2.md L3). Bot-only (the Next app never
+  // touches those rows), so set it in the bot's env. Use a long random value;
+  // it's SHA-256-derived to 32 bytes. Fail-closed: missing key => no plaintext
+  // fallback, the bot throws on connect/order rather than storing creds in clear.
+  get CLOB_CREDS_ENC_KEY() { return need('CLOB_CREDS_ENC_KEY'); },
   get GROQ_API_KEY() { return need('GROQ_API_KEY'); },
   get OPENAI_API_KEY() { return need('OPENAI_API_KEY'); },
   get COINBASE_COMMERCE_API_KEY() { return need('COINBASE_COMMERCE_API_KEY'); },
