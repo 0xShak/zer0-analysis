@@ -2,6 +2,8 @@
 // cause the caller to skip insertion AND emit a `scope='app'` thought
 // describing the reject reason (spec §4).
 
+import { stripLinksAndHandles } from '../text-safety';
+
 // Note: the success shape narrows `side` to BUY|SELL because
 // validateAnalysisOutput rejects NONE explicitly. The raw model output may
 // still be NONE — that's handled by the validator before this type is used.
@@ -58,8 +60,15 @@ export function validateAnalysisOutput(
   if (typeof size !== 'number' || size < 1 || size > 100) {
     return { ok: false, reason: 'suggested_size_usd outside [1, 100]' };
   }
-  if (typeof rationale !== 'string' || rationale.length < 100 || rationale.length > 1000) {
-    return { ok: false, reason: `rationale length ${typeof rationale === 'string' ? rationale.length : 'n/a'} outside [100, 1000]` };
+  if (typeof rationale !== 'string') {
+    return { ok: false, reason: 'rationale not a string' };
+  }
+  // Strip injected links/@handles BEFORE the length gate so a rationale that is
+  // mostly an attacker payload fails the quality bar instead of shipping cleaned
+  // but empty (audit2.md M-A).
+  const cleanRationale = stripLinksAndHandles(rationale);
+  if (cleanRationale.length < 100 || cleanRationale.length > 1000) {
+    return { ok: false, reason: `rationale length ${cleanRationale.length} outside [100, 1000]` };
   }
   if (typeof tokenId !== 'string' || !candidate.tokenIds.includes(tokenId)) {
     return { ok: false, reason: 'token_id not in candidate token_ids' };
@@ -74,7 +83,7 @@ export function validateAnalysisOutput(
       token_id: tokenId,
       suggested_price: price,
       suggested_size_usd: size,
-      rationale,
+      rationale: cleanRationale,
     },
   };
 }
