@@ -14,7 +14,11 @@ import type { Database } from '../database.types';
 import { env } from '../env';
 import { inngest, simRequested } from '../inngest/client';
 import { quotedSimAmount } from '../web3/zer0-payment';
-import { insertPendingSim, updatePendingSim, type PendingSim } from './db';
+import {
+  insertPendingSim,
+  markPendingSimPaidAtomic,
+  type PendingSim,
+} from './db';
 
 type Db = SupabaseClient<Database>;
 
@@ -76,19 +80,28 @@ export async function createSimRequest(
 }
 
 /**
- * Promote a paid (or payment-verified) pending_sim to PAID and fire the run.
- * Idempotent on pay_tx_hash via the unique index — a double-submit of the same
- * tx fails the insert/update path upstream, not here.
+ * Promote a payment-verified pending_sim to PAID and fire the run, atomically:
+ * the AWAITING_PAYMENT → PAID flip and the sim/requested send only happen when
+ * THIS call wins the transition, so a re-submit (or a concurrent claim) can't
+ * double-run the sim. Returns whether the run was enqueued by this call.
+ *
+ * NOTE: the DB flip and the send are coupled here for the single-shot web path.
+ * The durable Telegram verifier (sim-verify-payment) deliberately splits them
+ * into separate Inngest steps so a dropped send retries on its own — see that
+ * function rather than reusing this helper from inside a durable function.
  */
 export async function markSimPaidAndEnqueue(
   supabase: Db,
   pendingSimId: string,
   txHash: string,
-): Promise<void> {
-  await updatePendingSim(supabase, pendingSimId, {
-    state: 'PAID',
-    payTxHash: txHash,
-    paidAt: new Date().toISOString(),
-  });
-  await inngest.send(simRequested.create({ pendingSimId }));
+): Promise<boolean> {
+  const transitioned = await markPendingSimPaidAtomic(
+    supabase,
+    pendingSimId,
+    txHash,
+  );
+  if (transitioned) {
+    await inngest.send(simRequested.create({ pendingSimId }));
+  }
+  return transitioned;
 }

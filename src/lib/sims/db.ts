@@ -101,6 +101,35 @@ export async function updatePendingSim(
 }
 
 /**
+ * Atomically transition AWAITING_PAYMENT → PAID, recording the tx hash. Returns
+ * true only when THIS call performed the transition (a row was actually
+ * updated). The `state = 'AWAITING_PAYMENT'` predicate makes the flip a no-op on
+ * any subsequent caller, so the wallet-returned-hash fast path and the chain
+ * scan racing for the same payment can never enqueue the sim twice. The unique
+ * partial index on pay_tx_hash is the second line of defence (one tx → one sim).
+ */
+export async function markPendingSimPaidAtomic(
+  supabase: Db,
+  id: string,
+  txHash: string,
+): Promise<boolean> {
+  const nowIso = new Date().toISOString();
+  const { data, error } = await supabase
+    .from('pending_sims')
+    .update({
+      state: 'PAID',
+      pay_tx_hash: txHash,
+      paid_at: nowIso,
+      updated_at: nowIso,
+    })
+    .eq('id', id)
+    .eq('state', 'AWAITING_PAYMENT')
+    .select('id');
+  if (error) throw error;
+  return (data ?? []).length > 0;
+}
+
+/**
  * Expire AWAITING_PAYMENT rows whose window has elapsed. Returns the affected
  * ids so a caller (e.g. the bot's expiry cron) can notify them.
  */

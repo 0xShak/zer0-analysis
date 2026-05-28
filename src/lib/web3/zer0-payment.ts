@@ -53,6 +53,9 @@ const ERC20_ABI = [
 /** Exported so the WC pay flow encodes the same `transfer(...)` calldata. */
 export const ZER0_ERC20_ABI = ERC20_ABI;
 
+/** The Transfer event, used for indexed `getLogs` filtering in the scanner. */
+const TRANSFER_EVENT = ERC20_ABI[0];
+
 function publicClient() {
   return createPublicClient({ chain: base, transport: http(env.BASE_RPC_URL) });
 }
@@ -152,4 +155,58 @@ export async function verifyZer0Payment(
     return { ok: false, reason: 'amount_too_low', amount: total };
   }
   return { ok: true, amount: total };
+}
+
+/** Current Base block height — the durable verifier's scan lower bound. */
+export async function currentBaseBlock(): Promise<bigint> {
+  return publicClient().getBlockNumber();
+}
+
+export interface ScanForSimPaymentArgs {
+  /** Payer EOA — REQUIRED so concurrent payers to the same sink don't cross-attribute. */
+  from: string;
+  /** The sink the transfer must land in. */
+  to: string;
+  /** Minimum transferred value, in base units. */
+  minAmount: bigint;
+  /** Block to scan from (the chain tip captured when Pay was tapped). */
+  fromBlock: bigint;
+  /** Override the token contract (defaults to ZER0_TOKEN_ADDRESS). */
+  tokenAddress?: string;
+}
+
+export interface ScanForSimPaymentMatch {
+  txHash: string;
+  value: bigint;
+}
+
+/**
+ * Scan Base for the payer's $ZER0 Transfer to the sink. Both `from` and `to` are
+ * indexed on the Transfer event, so getLogs filters server-side over the small
+ * recent range — cheap. Returns the first matching log whose value clears
+ * `minAmount` (a single valid payment is enough), or null if none yet.
+ */
+export async function scanForSimPayment(
+  args: ScanForSimPaymentArgs,
+): Promise<ScanForSimPaymentMatch | null> {
+  const client = publicClient();
+  const token = getAddress(args.tokenAddress ?? env.ZER0_TOKEN_ADDRESS);
+  const from = getAddress(args.from);
+  const to = getAddress(args.to);
+
+  const logs = await client.getLogs({
+    address: token,
+    event: TRANSFER_EVENT,
+    args: { from, to },
+    fromBlock: args.fromBlock,
+    toBlock: 'latest',
+  });
+
+  for (const log of logs) {
+    const value = (log.args as { value?: bigint }).value;
+    if (value === undefined || value < args.minAmount) continue;
+    if (!log.transactionHash) continue;
+    return { txHash: log.transactionHash, value };
+  }
+  return null;
 }

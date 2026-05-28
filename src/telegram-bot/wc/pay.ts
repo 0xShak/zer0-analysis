@@ -1,9 +1,14 @@
 // $ZER0 pay-per-sim over WalletConnect, on Base (eip155:8453).
 //
 // Sequenced last + gated (ZER0_SIM_PAYMENT_ENABLED) — see miroshark-zero.html
-// §6 task 6 / §7. Flow: encode an ERC-20 transfer(sink, price) → ask the user's
-// connected wallet to eth_sendTransaction on Base → verify the transfer landed
-// on-chain → mark the pending_sim PAID and fire sim/requested.
+// §6 task 6 / §7. Flow: capture the Base chain tip → encode an ERC-20
+// transfer(sink, price) → ask the user's connected wallet to
+// eth_sendTransaction → ALWAYS hand off to the durable sim-verify-payment
+// Inngest function, which scans Base for the transfer and runs the sim the
+// moment it lands. We deliberately do NOT verify inline here: a dropped/
+// timed-out WalletConnect response must no longer be able to lose a payment that
+// actually mined (the bug). The wallet-returned hash, if any, is passed along as
+// a fast-path optimisation only.
 //
 // CAVEAT (§7): existing WC sessions are Polygon-scoped (wc/pair.ts pairs
 // eip155:137). Base is now offered as an OPTIONAL namespace, so wallets paired
@@ -15,12 +20,12 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { encodeFunctionData, getAddress, type Hex } from 'viem';
 import type { Database } from '../../lib/database.types';
 import { env } from '../../lib/env';
-import { markSimPaidAndEnqueue } from '../../lib/sims/request';
-import { updatePendingSim, type PendingSim } from '../../lib/sims/db';
+import { inngest, simPaymentSubmitted } from '../../lib/inngest/client';
+import type { PendingSim } from '../../lib/sims/db';
 import {
   ZER0_ERC20_ABI,
+  currentBaseBlock,
   quotedSimAmount,
-  verifyZer0Payment,
 } from '../../lib/web3/zer0-payment';
 import { getWcSession } from '../db/sessions';
 import { getSignClient } from './sign-client';
@@ -96,7 +101,22 @@ export async function processSimPayment(
     args: [getAddress(pending.pay_to_address), amount],
   });
 
-  let txHash: string;
+  // Capture the chain tip BEFORE asking the wallet to pay — this is the scan's
+  // lower bound, so the durable verifier only inspects blocks from here forward.
+  let fromBlock: bigint;
+  try {
+    fromBlock = await currentBaseBlock();
+  } catch (err) {
+    console.error('[telegram-bot] could not read Base block height', err);
+    await edit(ctx, 'Base looks unreachable right now — try /sim again in a moment.');
+    return;
+  }
+
+  // Ask the wallet to send. A timeout / relay drop is NO LONGER fatal: the
+  // wallet may still broadcast the transfer, and the durable verifier scans
+  // Base for it regardless. Capture the hash if it comes back (fast path), else
+  // null — we never depend on it.
+  let txHash: string | null = null;
   try {
     txHash = await sendBaseTransfer({
       topic: session.sessionTopic,
@@ -105,35 +125,25 @@ export async function processSimPayment(
       data,
     });
   } catch (err) {
-    console.error('[telegram-bot] sim payment send failed', err);
-    await updatePendingSim(supabase, pending.id, { error: 'payment_send_failed' });
-    await edit(
-      ctx,
-      "Couldn't send the payment. If your wallet says Base isn't enabled for this session, re-run /connect and try again.",
+    console.warn(
+      '[telegram-bot] wallet send returned no hash (timeout/drop) — handing off to chain scan',
+      err,
     );
-    return;
   }
 
-  await edit(ctx, 'Payment sent — verifying on Base…');
+  await inngest.send(
+    simPaymentSubmitted.create({
+      pendingSimId: pending.id,
+      expectedFrom: session.eoaAddress,
+      sink: pending.pay_to_address,
+      amountBaseUnits: amount.toString(),
+      fromBlock: fromBlock.toString(),
+      txHash,
+    }),
+  );
 
-  const result = await verifyZer0Payment({
-    txHash,
-    expectedTo: pending.pay_to_address,
-    expectedAmount: amount,
-    expectedFrom: session.eoaAddress,
-  });
-  if (!result.ok) {
-    await updatePendingSim(supabase, pending.id, {
-      error: `verify_${result.reason ?? 'unknown'}`,
-      payTxHash: txHash,
-    });
-    await edit(
-      ctx,
-      `Payment didn't verify (${result.reason ?? 'unknown'}). If it went through, keep this tx hash: ${txHash}`,
-    );
-    return;
-  }
-
-  await markSimPaidAndEnqueue(supabase, pending.id, txHash);
-  await edit(ctx, '✓ Paid. Running your sim now — I\'ll ping you the moment it lands.');
+  await edit(
+    ctx,
+    "Payment request sent — I'm watching Base and I'll run your sim the moment it lands, even if your wallet times out.",
+  );
 }

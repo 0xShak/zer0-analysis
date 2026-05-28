@@ -32,3 +32,19 @@ export const simRequested = eventType('sim/requested', {
     pendingSimId: string;
   }>(),
 });
+
+// Fired by the Telegram /sim pay handler the moment it asks the wallet to send,
+// BEFORE (and independent of) any wallet-returned tx hash. The durable
+// sim-verify-payment function scans Base for the payer's $ZER0 Transfer to the
+// sink and enqueues the run when it lands — so a dropped/timed-out WalletConnect
+// response can no longer lose a payment that actually mined.
+export const simPaymentSubmitted = eventType('sim/payment.submitted', {
+  schema: staticSchema<{
+    pendingSimId: string;
+    expectedFrom: string; // payer EOA (session.eoaAddress) — REQUIRED for attribution
+    sink: string; // pending_sims.pay_to_address
+    amountBaseUnits: string; // stringified bigint
+    fromBlock: string; // chain tip when Pay was tapped (stringified bigint)
+    txHash?: string | null; // fast-path hash if the wallet returned one
+  }>(),
+});
