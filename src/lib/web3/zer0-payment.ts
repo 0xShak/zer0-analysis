@@ -171,6 +171,10 @@ export interface ScanForSimPaymentArgs {
   minAmount: bigint;
   /** Block to scan from (the chain tip captured when Pay was tapped). */
   fromBlock: bigint;
+  /** Block to scan to (defaults to the current chain tip). */
+  toBlock?: bigint;
+  /** Max blocks per getLogs call (defaults to env.BASE_LOG_SCAN_CHUNK). */
+  maxRange?: bigint;
   /** Override the token contract (defaults to ZER0_TOKEN_ADDRESS). */
   tokenAddress?: string;
 }
@@ -182,9 +186,13 @@ export interface ScanForSimPaymentMatch {
 
 /**
  * Scan Base for the payer's $ZER0 Transfer to the sink. Both `from` and `to` are
- * indexed on the Transfer event, so getLogs filters server-side over the small
- * recent range — cheap. Returns the first matching log whose value clears
- * `minAmount` (a single valid payment is enough), or null if none yet.
+ * indexed on the Transfer event, so getLogs filters server-side — cheap, and the
+ * `from` filter is what keeps concurrent same-sink payers from cross-attributing.
+ *
+ * Walks [fromBlock, toBlock] in `maxRange`-sized chunks because free RPC tiers
+ * cap the getLogs block range (QuickNode Discover 5, Alchemy free 10). Returns
+ * the first log whose value clears `minAmount` (one valid payment is enough), or
+ * null if none in range yet.
  */
 export async function scanForSimPayment(
   args: ScanForSimPaymentArgs,
@@ -193,20 +201,26 @@ export async function scanForSimPayment(
   const token = getAddress(args.tokenAddress ?? env.ZER0_TOKEN_ADDRESS);
   const from = getAddress(args.from);
   const to = getAddress(args.to);
+  const tip = args.toBlock ?? (await client.getBlockNumber());
+  const chunk = args.maxRange ?? BigInt(env.BASE_LOG_SCAN_CHUNK);
+  const one = BigInt(1);
 
-  const logs = await client.getLogs({
-    address: token,
-    event: TRANSFER_EVENT,
-    args: { from, to },
-    fromBlock: args.fromBlock,
-    toBlock: 'latest',
-  });
-
-  for (const log of logs) {
-    const value = (log.args as { value?: bigint }).value;
-    if (value === undefined || value < args.minAmount) continue;
-    if (!log.transactionHash) continue;
-    return { txHash: log.transactionHash, value };
+  for (let start = args.fromBlock; start <= tip; start = start + chunk) {
+    let end = start + chunk - one;
+    if (end > tip) end = tip;
+    const logs = await client.getLogs({
+      address: token,
+      event: TRANSFER_EVENT,
+      args: { from, to },
+      fromBlock: start,
+      toBlock: end,
+    });
+    for (const log of logs) {
+      const value = (log.args as { value?: bigint }).value;
+      if (value === undefined || value < args.minAmount) continue;
+      if (!log.transactionHash) continue;
+      return { txHash: log.transactionHash, value };
+    }
   }
   return null;
 }

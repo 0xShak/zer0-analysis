@@ -29,6 +29,13 @@ export const env = {
   // private RPC if rate-limits bite under load.
   BASE_RPC_URL: process.env.BASE_RPC_URL ?? 'https://mainnet.base.org',
 
+  // Max block span per eth_getLogs call when scanning Base for a sim payment.
+  // Free RPC tiers cap getLogs ranges (QuickNode Discover = 5, Alchemy free =
+  // 10), so the payment scanner walks the window in chunks this size. Default 10
+  // (fits Alchemy free); set to 5 for QuickNode Discover, or raise it on a paid
+  // plan to scan in fewer calls.
+  BASE_LOG_SCAN_CHUNK: process.env.BASE_LOG_SCAN_CHUNK ?? '10',
+
   // Server-only — readers should call these via getters below to surface
   // a useful error when the var is unset during a request.
   get SUPABASE_SERVICE_KEY() { return need('SUPABASE_SERVICE_KEY'); },
