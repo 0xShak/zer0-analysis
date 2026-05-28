@@ -1,11 +1,10 @@
 import { type NextRequest } from 'next/server';
 import { z } from 'zod';
-import { getAddress, recoverMessageAddress, type Hex } from 'viem';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { getPendingSim } from '@/lib/sims/db';
 import { isSimPaymentEnabled, markSimPaidAndEnqueue } from '@/lib/sims/request';
 import { quotedSimAmount, verifyZer0Payment } from '@/lib/web3/zer0-payment';
-import { simPaymentAuthMessage } from '@/lib/web3/sim-payment-auth';
+import { recoverSimPayer } from '@/lib/web3/verify-sim-payer';
 import { clientIpFromHeaders } from '@/lib/chat/fingerprint';
 import { checkTradeRateLimit, rateLimitKey } from '@/lib/trades/rate-limit';
 
@@ -57,17 +56,12 @@ export async function POST(req: NextRequest) {
 
   // Recover the payer from the signature and require it to match the claimed
   // address. This is the wallet the on-chain transfer must originate from.
-  let payer: string;
-  try {
-    const recovered = await recoverMessageAddress({
-      message: simPaymentAuthMessage(pending_sim_id),
-      signature: signature as Hex,
-    });
-    if (getAddress(recovered) !== getAddress(from_address)) {
-      return Response.json({ ok: false, reason: 'bad_signature' }, { status: 401 });
-    }
-    payer = getAddress(from_address);
-  } catch {
+  const payer = await recoverSimPayer({
+    pendingSimId: pending_sim_id,
+    fromAddress: from_address,
+    signature,
+  });
+  if (!payer) {
     return Response.json({ ok: false, reason: 'bad_signature' }, { status: 401 });
   }
 

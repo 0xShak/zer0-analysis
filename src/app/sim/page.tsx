@@ -115,6 +115,24 @@ export default function SimTriggerPage() {
         pendingSimId,
       });
 
+      // Arm the durable on-chain watcher BEFORE paying, so the sim still runs
+      // if this tab closes after the transfer. Best-effort: /api/sim/verify
+      // below is the fast path. Must precede payForSim so the scan's block
+      // lower bound is captured before the tx is sent.
+      try {
+        await fetch('/api/sim/pay-intent', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            pending_sim_id: pendingSimId,
+            from_address: address,
+            signature,
+          }),
+        });
+      } catch {
+        // Non-fatal — the fast-path verify still completes the common case.
+      }
+
       const txHash = await payForSim({
         ethereum,
         from: address,
