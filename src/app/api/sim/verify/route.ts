@@ -6,6 +6,8 @@ import { getPendingSim } from '@/lib/sims/db';
 import { isSimPaymentEnabled, markSimPaidAndEnqueue } from '@/lib/sims/request';
 import { quotedSimAmount, verifyZer0Payment } from '@/lib/web3/zer0-payment';
 import { simPaymentAuthMessage } from '@/lib/web3/sim-payment-auth';
+import { clientIpFromHeaders } from '@/lib/chat/fingerprint';
+import { checkTradeRateLimit, rateLimitKey } from '@/lib/trades/rate-limit';
 
 // POST /api/sim/verify — web payment confirmation. The browser sends the
 // $ZER0 transfer on Base (WalletConnect), waits for it to confirm, then posts
@@ -40,6 +42,18 @@ export async function POST(req: NextRequest) {
   }
   const { pending_sim_id, tx_hash, from_address, signature } = parsed.data;
   const supabase = createAdminClient();
+
+  // Shed floods before the expensive path (signature recovery + a 30s receipt
+  // wait + log reads): unauthenticated callers could otherwise pin serverless
+  // time and drain the RPC quota. A legit payer verifies once per sim.
+  const ip = clientIpFromHeaders(req.headers);
+  if (
+    !(await checkTradeRateLimit(supabase, rateLimitKey([ip, 'sim-verify']), {
+      limit: 10,
+    }))
+  ) {
+    return Response.json({ error: 'rate_limited' }, { status: 429 });
+  }
 
   // Recover the payer from the signature and require it to match the claimed
   // address. This is the wallet the on-chain transfer must originate from.

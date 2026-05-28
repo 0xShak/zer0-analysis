@@ -2,10 +2,18 @@ import type { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { createCharge } from '@/lib/coinbase';
+import { clientIpFromHeaders } from '@/lib/chat/fingerprint';
+import { checkTradeRateLimit, rateLimitKey } from '@/lib/trades/rate-limit';
+
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
 
 const Body = z.object({
   sessionId: z.string().uuid(),
-  walletAddress: z.string().optional(),
+  walletAddress: z
+    .string()
+    .regex(/^0x[a-fA-F0-9]{40}$/, 'walletAddress must be a 0x… EVM address')
+    .optional(),
 });
 
 export async function POST(req: NextRequest) {
@@ -15,9 +23,29 @@ export async function POST(req: NextRequest) {
   }
   const { sessionId, walletAddress } = parsed.data;
 
+  const supabase = createAdminClient();
+
+  // Rate-limit BEFORE the external Coinbase call — this endpoint is
+  // unauthenticated, so without a cap anyone could flood it to spam junk
+  // charges into our Commerce dashboard and bloat the payments table.
+  const ip = clientIpFromHeaders(req.headers);
+  if (!(await checkTradeRateLimit(supabase, rateLimitKey([ip, 'checkout']), { limit: 5 }))) {
+    return Response.json({ error: 'rate_limited' }, { status: 429 });
+  }
+
+  // Only create a charge for a session we actually issued — stops charges/
+  // payments rows being created against arbitrary random UUIDs.
+  const { data: session } = await supabase
+    .from('sessions')
+    .select('id')
+    .eq('id', sessionId)
+    .maybeSingle();
+  if (!session) {
+    return Response.json({ error: 'session_not_found' }, { status: 404 });
+  }
+
   const charge = await createCharge({ sessionId, walletAddress });
 
-  const supabase = createAdminClient();
   await supabase.from('payments').insert({
     session_id: sessionId,
     coinbase_charge_id: charge.id,
