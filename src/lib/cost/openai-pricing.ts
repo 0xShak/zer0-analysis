@@ -41,6 +41,14 @@ export const PRICING: Record<string, PricingRow> = {
     cached_input_per_million: null,
     output_per_million: 0.08,
   },
+  // gpt-4o-mini: $0.15 in / $0.075 cached / $0.60 out (platform.openai.com/pricing).
+  // Default CHAT_FALLBACK_MODEL — the cheap overflow model that serves chat +
+  // intent-parse only when Groq's free tier 429s. See lib/llm/chat.ts.
+  'gpt-4o-mini': {
+    input_per_million: 0.15,
+    cached_input_per_million: 0.075,
+    output_per_million: 0.6,
+  },
   // Groq Llama 3.3 70B Versatile: $0.59 in, $0.79 out (groq.com/pricing).
   'llama-3.3-70b-versatile': {
     input_per_million: 0.59,

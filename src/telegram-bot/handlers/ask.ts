@@ -78,13 +78,16 @@ export async function handleAskOrTrade(ctx: Context): Promise<void> {
   try {
     intent = await parseIntent({ userText: text });
   } catch (err) {
-    if (err instanceof IntentParseError) {
-      // Couldn't make sense of the message via the classifier — fall through
-      // to the chat pipeline rather than telling the user we failed.
-      intent = null;
-    } else {
-      throw err;
+    // ANY parse failure degrades to intent=null and falls through to the chat
+    // pipeline — never rethrow. IntentParseError means malformed classifier
+    // output; anything else (e.g. a Groq 429 that even the overflow fallback
+    // couldn't absorb) used to propagate to handleTextMessageSafe and DROP the
+    // message with no reply. Losing the intent just skips trade/sim shortcut
+    // detection; the user still gets a chat reply. See 429_op.md task 3.
+    if (!(err instanceof IntentParseError)) {
+      console.error('[telegram-bot] intent parse failed, treating as chat', err);
     }
+    intent = null;
   }
 
   if (

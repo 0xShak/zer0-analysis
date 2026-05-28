@@ -2,9 +2,8 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { inngest, chatMessageReceived } from '../client';
 import { createAdminClient } from '../../supabase/admin';
 import type { Database } from '../../database.types';
-import { getGroq, GROQ_MODELS } from '../../groq';
-import { logUsage } from '../../cost/log';
-import { computeCost } from '../../cost/openai-pricing';
+import { GROQ_MODELS } from '../../groq';
+import { chatCompletion } from '../../llm/chat';
 import {
   CHAT_GROUND_RULES,
   formatRecentWorkForSystem,
@@ -90,6 +89,14 @@ export const chatRespond = inngest.createFunction(
     id: 'zer0-chat-respond',
     name: 'ZER0 chat respond',
     triggers: [chatMessageReceived],
+    // Backpressure on Groq's free-tier ~6,000 TPM bucket (shared with
+    // brain-tick et al.). At ~2k tokens/reply, throttle.limit(3) × 2k ≈ 6k/min;
+    // concurrency caps simultaneous in-flight calls so a burst doesn't stampede
+    // and 429 the whole bucket. Calls that still hit a 429 spill to the cheap
+    // overflow model inside chatCompletion rather than failing the run. Tune
+    // these as real TPM pressure shows up in the usage logs. See 429_op.md.
+    concurrency: { limit: 2 },
+    throttle: { limit: 3, period: '1m' },
     onFailure: async ({ event, error, step }) => {
       // The original triggering event is nested under the failure payload.
       const data = event.data.event.data as ChatEventData;
@@ -126,7 +133,6 @@ export const chatRespond = inngest.createFunction(
     })) as LiveMarketView[];
 
     const result = await step.run('groq-completion', async () => {
-      const groq = getGroq();
       const liveBlock =
         liveMarkets.length > 0
           ? `\n\n## Live Polymarket data (fetched just now for this question)\n${formatLiveMarketsForSystem(liveMarkets)}`
@@ -143,19 +149,19 @@ ${CHAT_GROUND_RULES}
 
 Recent conversation memory follows. Respond as ZER0 — knowledgeable about Polymarket, has personality, doesn't hedge, references specific markets when relevant.`;
 
-      // Instrumentation: the next time this throws (429 vs 15s timeout vs
-      // content filter), the model/latency/finish_reason/error are in the
-      // Vercel logs so it's diagnosable without re-deriving. See #6 in
-      // chat-stuck-typing.md.
-      const startedAt = Date.now();
       try {
-        const resp = await groq.chat.completions.create({
-          model: GROQ_MODELS.CHAT,
+        // Groq primary; on a 429/5xx/timeout this spills to the cheap overflow
+        // model and still returns a REAL reply (the old code returned a canned
+        // "I'm flooded" line on any 429). Usage + which provider served the
+        // call are logged inside chatCompletion. See 429_op.md task 4 / #6.
+        const completion = await chatCompletion({
+          groqModel: GROQ_MODELS.CHAT,
           temperature: 0.4,
           // 800 (was 1500): the reply counts against Groq's free-tier per-minute
           // token ceiling; a chat answer rarely needs more, and the smaller cap
           // lets more messages land within the same minute. See groq.ts.
-          max_tokens: 800,
+          maxTokens: 800,
+          step: 'chat',
           messages: [
             { role: 'system', content: system },
             ...context.messages.map((m) => ({
@@ -164,35 +170,15 @@ Recent conversation memory follows. Respond as ZER0 — knowledgeable about Poly
             })),
           ],
         });
-        const finishReason = resp.choices[0]?.finish_reason;
-        console.info('[chat-respond] groq-completion ok', {
-          model: GROQ_MODELS.CHAT,
-          latencyMs: Date.now() - startedAt,
-          finishReason,
-        });
-
-        const tokens_in = resp.usage?.prompt_tokens ?? 0;
-        const tokens_out = resp.usage?.completion_tokens ?? 0;
-        await logUsage({
-          provider: 'groq',
-          model: GROQ_MODELS.CHAT,
-          tokens_in,
-          tokens_out,
-          cost_usd: computeCost(GROQ_MODELS.CHAT, { tokens_in, tokens_out }),
-          step: 'chat',
-        });
-        return { reply: resp.choices[0]?.message?.content ?? '', degraded: false };
+        return { reply: completion.content, degraded: false };
       } catch (err) {
-        // Groq rate-limited (429) or otherwise unavailable. Do NOT rethrow:
-        // throwing fails the step, Inngest retries it ~4x over several minutes
-        // (still rate-limited each time), and the user is left on "Typing…"
-        // with no reply ever delivered. Instead deliver a short fallback so the
-        // bot always answers. This mirrors brain-tick's summarize fallback.
-        // groq-sdk APIError exposes `.status` (e.g. 429); plain errors don't.
+        // BOTH Groq AND the overflow fallback failed — the rare true outage.
+        // Do NOT rethrow: throwing fails the step, Inngest retries it ~4x over
+        // several minutes (still failing each time), and the user is left on
+        // "Typing…" with no reply ever delivered. Deliver a short canned line
+        // so the bot always answers. SDK APIError exposes `.status` (e.g. 429).
         const status = (err as { status?: number } | null)?.status;
-        console.warn('[chat-respond] groq-completion failed, delivering fallback', {
-          model: GROQ_MODELS.CHAT,
-          latencyMs: Date.now() - startedAt,
+        console.warn('[chat-respond] groq+fallback both failed, delivering canned reply', {
           errorName: (err as Error)?.name,
           errorStatus: status,
         });

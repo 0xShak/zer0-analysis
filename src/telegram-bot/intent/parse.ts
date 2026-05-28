@@ -13,6 +13,7 @@
 
 import { z } from 'zod';
 import { getGroq, GROQ_MODELS } from '../../lib/groq';
+import { chatCompletion } from '../../lib/llm/chat';
 
 export const IntentSchema = z.object({
   intent: z.enum([
@@ -90,16 +91,21 @@ export async function parseIntent(args: ParseIntentArgs): Promise<Intent> {
   let extraInstruction = '';
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    const res = await groq.chat.completions.create({
-      model,
+    // Route through the fallback wrapper so a Groq 429 doesn't kill the parse —
+    // it spills to the cheap overflow model and still returns JSON. Malformed
+    // output is still handled by the retry loop below, not the wrapper.
+    const res = await chatCompletion({
+      groq,
+      groqModel: model,
       temperature: 0,
-      response_format: { type: 'json_object' },
+      jsonMode: true,
+      step: 'classify',
       messages: [
         { role: 'system', content: SYSTEM_PROMPT + extraInstruction },
         { role: 'user', content: args.userText },
       ],
     });
-    const content = res.choices[0]?.message?.content ?? '';
+    const content = res.content;
     let json: unknown;
     try {
       json = JSON.parse(content);
