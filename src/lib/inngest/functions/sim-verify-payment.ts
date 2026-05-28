@@ -21,6 +21,7 @@ import { createAdminClient } from '../../supabase/admin';
 import type { Database } from '../../database.types';
 import {
   getPendingSim,
+  listUsedPayTxHashes,
   markPendingSimPaidAtomic,
   updatePendingSim,
 } from '../../sims/db';
@@ -36,6 +37,10 @@ const VERIFY_MAX_POLLS = 120;
 // 60s). If the tx isn't mined yet, this returns receipt_not_found and we simply
 // fall through to the scan loop — the hash was only ever an optimisation.
 const FAST_PATH_WAIT_MS = 20_000;
+// How far back to gather already-used pay_tx_hashes to exclude from the scan.
+// The scan range is only minutes wide (fromBlock = when Pay was tapped), so any
+// colliding tx is recent; this window just bounds the lookup with wide margin.
+const USED_HASH_LOOKBACK_MS = 6 * 60 * 60_000; // 6h
 
 const NOT_DETECTED_MESSAGE =
   "I didn't see your $ZER0 payment land on Base within the window. If you did pay, hang tight and ping me — otherwise tap /sim to try again.";
@@ -134,10 +139,10 @@ export const simVerifyPayment = inngest.createFunction(
         return r.ok;
       });
       if (verified) {
-        const won = await step.run('claim-fast', () =>
+        const claim = await step.run('claim-fast', () =>
           markPendingSimPaidAtomic(supabase, pendingSimId, txHash),
         );
-        if (won) {
+        if (claim === 'claimed') {
           await step.run('enqueue-fast', () =>
             inngest.send(simRequested.create({ pendingSimId })),
           );
@@ -152,24 +157,37 @@ export const simVerifyPayment = inngest.createFunction(
     //    send retries without re-doing or undoing the transition.
     for (let i = 0; i < VERIFY_MAX_POLLS; i++) {
       const foundTxHash = await step.run(`scan-${i}`, async () => {
+        // Exclude tx hashes already funding another sim so a second concurrent
+        // invoice from the same payer skips that transfer and finds its own.
+        const used = await listUsedPayTxHashes(
+          supabase,
+          new Date(Date.now() - USED_HASH_LOOKBACK_MS).toISOString(),
+        );
         const match = await scanForSimPayment({
           from: expectedFrom,
           to: sink,
           minAmount,
           fromBlock: startBlock,
+          excludeTxHashes: used,
         });
         return match ? match.txHash : null;
       });
       if (foundTxHash) {
-        const won = await step.run(`claim-scan-${i}`, () =>
+        const claim = await step.run(`claim-scan-${i}`, () =>
           markPendingSimPaidAtomic(supabase, pendingSimId, foundTxHash),
         );
-        if (won) {
+        if (claim === 'claimed') {
           await step.run(`enqueue-scan-${i}`, () =>
             inngest.send(simRequested.create({ pendingSimId })),
           );
+          return { ok: true, via: 'scan', txHash: foundTxHash };
         }
-        return { ok: true, via: 'scan', txHash: foundTxHash };
+        if (claim === 'already_settled') {
+          return { ok: true, via: 'scan-already-settled' };
+        }
+        // claim === 'tx_taken': that transfer was claimed by another sim between
+        // our query and the write. Keep polling — next iteration's exclude set
+        // includes it, so the scan advances to this payer's next transfer.
       }
       if (i === VERIFY_MAX_POLLS - 1) break;
       await step.sleep(`scan-wait-${i}`, POLL_INTERVAL);

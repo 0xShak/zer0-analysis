@@ -177,6 +177,11 @@ export interface ScanForSimPaymentArgs {
   maxRange?: bigint;
   /** Override the token contract (defaults to ZER0_TOKEN_ADDRESS). */
   tokenAddress?: string;
+  /**
+   * Tx hashes already funding another sim — skip them so a second concurrent
+   * invoice from the same payer advances to its own transfer. Case-insensitive.
+   */
+  excludeTxHashes?: readonly string[];
 }
 
 export interface ScanForSimPaymentMatch {
@@ -204,6 +209,9 @@ export async function scanForSimPayment(
   const tip = args.toBlock ?? (await client.getBlockNumber());
   const chunk = args.maxRange ?? BigInt(env.BASE_LOG_SCAN_CHUNK);
   const one = BigInt(1);
+  const exclude = new Set(
+    (args.excludeTxHashes ?? []).map((h) => h.toLowerCase()),
+  );
 
   for (let start = args.fromBlock; start <= tip; start = start + chunk) {
     let end = start + chunk - one;
@@ -219,6 +227,7 @@ export async function scanForSimPayment(
       const value = (log.args as { value?: bigint }).value;
       if (value === undefined || value < args.minAmount) continue;
       if (!log.transactionHash) continue;
+      if (exclude.has(log.transactionHash.toLowerCase())) continue;
       return { txHash: log.transactionHash, value };
     }
   }

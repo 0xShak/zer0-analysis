@@ -95,13 +95,10 @@ export async function markSimPaidAndEnqueue(
   pendingSimId: string,
   txHash: string,
 ): Promise<boolean> {
-  const transitioned = await markPendingSimPaidAtomic(
-    supabase,
-    pendingSimId,
-    txHash,
-  );
-  if (transitioned) {
+  const result = await markPendingSimPaidAtomic(supabase, pendingSimId, txHash);
+  if (result === 'claimed') {
     await inngest.send(simRequested.create({ pendingSimId }));
+    return true;
   }
-  return transitioned;
+  return false;
 }

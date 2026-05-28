@@ -101,18 +101,29 @@ export async function updatePendingSim(
 }
 
 /**
- * Atomically transition AWAITING_PAYMENT → PAID, recording the tx hash. Returns
- * true only when THIS call performed the transition (a row was actually
- * updated). The `state = 'AWAITING_PAYMENT'` predicate makes the flip a no-op on
- * any subsequent caller, so the wallet-returned-hash fast path and the chain
- * scan racing for the same payment can never enqueue the sim twice. The unique
- * partial index on pay_tx_hash is the second line of defence (one tx → one sim).
+ * Outcome of an atomic paid-transition attempt:
+ * - `claimed`        — THIS call did the AWAITING_PAYMENT → PAID flip; enqueue.
+ * - `already_settled`— the row was no longer AWAITING_PAYMENT (some other path
+ *                      already claimed this sim); do nothing.
+ * - `tx_taken`       — the unique pay_tx_hash index rejected this tx because it
+ *                      already funds a *different* sim; the caller should try the
+ *                      payer's next transfer (same-payer-two-invoices race).
+ */
+export type SimPaidClaim = 'claimed' | 'already_settled' | 'tx_taken';
+
+/**
+ * Atomically transition AWAITING_PAYMENT → PAID, recording the tx hash. The
+ * `state = 'AWAITING_PAYMENT'` predicate makes the flip a no-op on any later
+ * caller, so the fast path and the chain scan racing for the same payment can
+ * never enqueue the sim twice. The unique partial index on pay_tx_hash is the
+ * second line of defence: one on-chain tx can fund at most one sim — a violation
+ * surfaces as `tx_taken` so the scanner moves on to the payer's next transfer.
  */
 export async function markPendingSimPaidAtomic(
   supabase: Db,
   id: string,
   txHash: string,
-): Promise<boolean> {
+): Promise<SimPaidClaim> {
   const nowIso = new Date().toISOString();
   const { data, error } = await supabase
     .from('pending_sims')
@@ -125,8 +136,35 @@ export async function markPendingSimPaidAtomic(
     .eq('id', id)
     .eq('state', 'AWAITING_PAYMENT')
     .select('id');
+  if (error) {
+    // 23505 = unique_violation on pending_sims_pay_tx_idx: this tx already funds
+    // another sim. Don't throw — let the caller skip it and look further.
+    if (error.code === '23505') return 'tx_taken';
+    throw error;
+  }
+  return (data ?? []).length > 0 ? 'claimed' : 'already_settled';
+}
+
+/**
+ * The pay_tx_hash values already recorded on pending_sims (optionally limited to
+ * rows touched since `sinceIso`). The payment scanner excludes these so a second
+ * concurrent invoice from the same payer skips a transfer that already funded
+ * another sim and advances to its own.
+ */
+export async function listUsedPayTxHashes(
+  supabase: Db,
+  sinceIso?: string,
+): Promise<string[]> {
+  let query = supabase
+    .from('pending_sims')
+    .select('pay_tx_hash')
+    .not('pay_tx_hash', 'is', null);
+  if (sinceIso) query = query.gte('updated_at', sinceIso);
+  const { data, error } = await query;
   if (error) throw error;
-  return (data ?? []).length > 0;
+  return (data ?? [])
+    .map((r) => r.pay_tx_hash)
+    .filter((h): h is string => typeof h === 'string');
 }
 
 /**

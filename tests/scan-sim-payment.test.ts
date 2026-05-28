@@ -90,6 +90,28 @@ describe('scanForSimPayment matching', () => {
     const { scanForSimPayment } = await import('@/lib/web3/zer0-payment');
     expect((await scanForSimPayment(single))?.txHash).toBe('0xgood');
   });
+
+  it('skips an excluded tx (already funding another sim) and returns the next', async () => {
+    // The same-payer-two-invoices race: tx A funded sim #1, so invoice #2 must
+    // advance to tx B rather than deadlock on A.
+    getLogsMock.mockResolvedValue([
+      transferLog({ from: FROM, to: SINK, value: PRICE, txHash: '0xAAA' }),
+      transferLog({ from: FROM, to: SINK, value: PRICE, txHash: '0xBBB' }),
+    ]);
+    const { scanForSimPayment } = await import('@/lib/web3/zer0-payment');
+    const r = await scanForSimPayment({ ...single, excludeTxHashes: ['0xAAA'] });
+    expect(r?.txHash).toBe('0xBBB');
+  });
+
+  it('matches excluded hashes case-insensitively', async () => {
+    getLogsMock.mockResolvedValue([
+      transferLog({ from: FROM, to: SINK, value: PRICE, txHash: '0xabc' }),
+    ]);
+    const { scanForSimPayment } = await import('@/lib/web3/zer0-payment');
+    // on-chain hash lowercase, exclusion supplied uppercase → still skipped
+    const r = await scanForSimPayment({ ...single, excludeTxHashes: ['0xABC'] });
+    expect(r).toBeNull();
+  });
 });
 
 describe('scanForSimPayment chunking (free-tier getLogs cap)', () => {
