@@ -60,6 +60,19 @@ export interface GammaMarket {
 
 const GAMMA_BASE = 'https://gamma-api.polymarket.com';
 
+// Gamma's /public-search sits behind Cloudflare bot protection that 403s
+// requests without a browser-like User-Agent when they come from datacenter
+// IPs (Vercel/Inngest) — even though the same call succeeds UA-less from a
+// residential IP, and /markets is unprotected. Sending a normal browser UA +
+// Accept-Language makes the request look like a browser and clears the 403.
+const GAMMA_HEADERS: Record<string, string> = {
+  Accept: 'application/json',
+  'Accept-Language': 'en-US,en;q=0.9',
+  'User-Agent':
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+    '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+};
+
 function parseStringArray(v: unknown): string[] {
   if (Array.isArray(v)) return v.map(String);
   if (typeof v === 'string') {
@@ -118,7 +131,7 @@ export async function fetchTradableMarkets(limit = 100, offset = 0): Promise<Gam
   const timer = setTimeout(() => controller.abort(), GAMMA_REQUEST_TIMEOUT_MS);
   try {
     const res = await fetch(`${GAMMA_BASE}/markets?${params}`, {
-      headers: { Accept: 'application/json' },
+      headers: GAMMA_HEADERS,
       next: { revalidate: 60 },
       signal: controller.signal,
     });
@@ -147,7 +160,7 @@ export async function fetchMarketByCondition(
   const timer = setTimeout(() => controller.abort(), GAMMA_REQUEST_TIMEOUT_MS);
   try {
     const res = await fetch(`${GAMMA_BASE}/markets?${params}`, {
-      headers: { Accept: 'application/json' },
+      headers: GAMMA_HEADERS,
       next: { revalidate: 60 },
       signal: controller.signal,
     });
@@ -189,7 +202,7 @@ export async function searchMarketsLive(
   const timer = setTimeout(() => controller.abort(), GAMMA_REQUEST_TIMEOUT_MS);
   try {
     const res = await fetch(`${GAMMA_BASE}/public-search?${params}`, {
-      headers: { Accept: 'application/json' },
+      headers: GAMMA_HEADERS,
       cache: 'no-store',
       signal: controller.signal,
     });
