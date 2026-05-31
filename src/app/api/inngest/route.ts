@@ -1,6 +1,7 @@
 import { serve } from 'inngest/next';
 import { inngest } from '@/lib/inngest/client';
 import { brainTick } from '@/lib/inngest/functions/brain-tick';
+import { catalogRefresh } from '@/lib/inngest/functions/catalog-refresh';
 import { chatRespond } from '@/lib/inngest/functions/chat-respond';
 import { settlePredictions } from '@/lib/inngest/functions/settle-predictions';
 import { proVerifyPayment } from '@/lib/inngest/functions/pro-verify-payment';
@@ -20,6 +21,7 @@ export const { GET, POST, PUT } = serve({
   client: inngest,
   functions: [
     brainTick,
+    catalogRefresh,
     chatRespond,
     proVerifyPayment,
     settlePredictions,

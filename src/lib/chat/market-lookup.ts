@@ -14,7 +14,8 @@
 // a wrong match here only means ZER0 mentions a market the user didn't ask
 // about — there is no order placed off the back of it.
 
-import { searchMarketsLive, type GammaMarket } from '../polymarket/gamma';
+import { type GammaMarket } from '../polymarket/gamma';
+import { searchCatalog } from '../polymarket/catalog-cache';
 
 export interface LiveMarketView {
   question: string;
@@ -88,7 +89,7 @@ export interface LookupOpts {
   // a Gamma blip permanently marks a real question 'skipped_ungrounded'.
   throwOnSearchError?: boolean;
   // Injectable for tests.
-  search?: typeof searchMarketsLive;
+  search?: typeof searchCatalog;
 }
 
 /**
@@ -101,7 +102,7 @@ export async function lookupLiveMarkets(
   query: string,
   opts: LookupOpts = {},
 ): Promise<LiveMarketView[]> {
-  const search = opts.search ?? searchMarketsLive;
+  const search = opts.search ?? searchCatalog;
   const limit = opts.limit ?? 4;
   const minOverlap = opts.minOverlap ?? 1;
 

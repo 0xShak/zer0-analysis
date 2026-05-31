@@ -17,7 +17,8 @@
     "x-dry-run": "tsx --env-file=.env.local scripts/x-broadcast-dry-run.ts",
     "x-mentions-dry-run": "tsx --env-file=.env.local scripts/x-mentions-dry-run.ts",
     "x-mentions-status": "tsx --env-file=.env.local scripts/x-mentions-status.ts",
-    "x-mention-reset": "tsx --env-file=.env.local scripts/x-mention-reset.ts"
+    "x-mention-reset": "tsx --env-file=.env.local scripts/x-mention-reset.ts",
+    "catalog-refresh": "tsx --env-file=.env.local scripts/catalog-refresh.ts"
   },
   "dependencies": {
     "@polymarket/builder-relayer-client": "^0.0.9",

@@ -145,6 +145,46 @@ export async function fetchTradableMarkets(limit = 100, offset = 0): Promise<Gam
   }
 }
 
+// Walks the /markets discovery feed (UNPROTECTED — works from prod, unlike
+// /public-search) to pull the active catalog ordered by total volume, so the
+// catalog-refresh cron can snapshot it for in-memory search. Pages at 100 (the
+// endpoint's cap). Tolerant: a mid-pagination failure returns what we have so
+// far rather than nothing.
+export async function fetchActiveCatalog(maxMarkets = 5000): Promise<GammaMarket[]> {
+  const all: GammaMarket[] = [];
+  for (let offset = 0; offset < maxMarkets; offset += 100) {
+    const params = new URLSearchParams({
+      active: 'true',
+      closed: 'false',
+      archived: 'false',
+      enableOrderBook: 'true',
+      order: 'volumeNum',
+      ascending: 'false',
+      limit: '100',
+      offset: String(offset),
+    });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), GAMMA_REQUEST_TIMEOUT_MS);
+    try {
+      const res = await fetch(`${GAMMA_BASE}/markets?${params}`, {
+        headers: GAMMA_HEADERS,
+        cache: 'no-store',
+        signal: controller.signal,
+      });
+      if (!res.ok) throw new Error(`Gamma /markets ${res.status}`);
+      const raw = (await res.json()) as GammaMarketRaw[];
+      all.push(...raw.map(normalise));
+      if (raw.length < 100) break; // last page
+    } catch (err) {
+      console.warn(`[gamma] catalog page failed at offset ${offset}:`, err);
+      break;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return all;
+}
+
 // Fetch a single market by conditionId — unlike fetchTradableMarkets this does
 // NOT filter on closed/active/archived, so RESOLVED markets come back too. Used
 // by the settlement job to read a market's final outcome after it resolves.

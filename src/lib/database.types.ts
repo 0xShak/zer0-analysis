@@ -193,6 +193,27 @@ export type Database = {
         };
         Relationships: [];
       };
+      market_catalog_cache: {
+        Row: {
+          id: number;
+          markets: Json;
+          market_count: number;
+          updated_at: string;
+        };
+        Insert: {
+          id?: number;
+          markets?: Json;
+          market_count?: number;
+          updated_at?: string;
+        };
+        Update: {
+          id?: number;
+          markets?: Json;
+          market_count?: number;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
       trade_recommendations: {
         Row: {
           id: string;
