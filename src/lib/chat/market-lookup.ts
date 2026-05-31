@@ -81,6 +81,12 @@ export interface LookupOpts {
   // coincidentally share ONE common word ("send", "good", "soon") with some
   // unrelated market — should raise this to 2+ to avoid spurious matches.
   minOverlap?: number;
+  // When true, a Gamma search failure RE-THROWS instead of being swallowed as
+  // []. Chat wants the swallow (a failed lookup just means "no live block").
+  // The mention cron wants the throw, so it can tell a transient Gamma error
+  // (retry the mention) apart from a genuine no-match (stay silent) — otherwise
+  // a Gamma blip permanently marks a real question 'skipped_ungrounded'.
+  throwOnSearchError?: boolean;
   // Injectable for tests.
   search?: typeof searchMarketsLive;
 }
@@ -112,6 +118,7 @@ export async function lookupLiveMarkets(
     hits = await search(query, 12);
   } catch (err) {
     console.warn('[market-lookup] gamma search failed', err);
+    if (opts.throwOnSearchError) throw err;
     return [];
   }
   if (hits.length === 0) return [];

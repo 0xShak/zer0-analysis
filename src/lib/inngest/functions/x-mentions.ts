@@ -121,7 +121,19 @@ export const xMentions = inngest.createFunction(
         // The silence gate: no live market → ZER0 says nothing. Strip the
         // @handle chain / links first so grounding keys on real words.
         const clean = stripMentionNoise(m.text);
-        const markets = await lookupLiveMarkets(clean, { minOverlap });
+        let markets;
+        try {
+          markets = await lookupLiveMarkets(clean, { minOverlap, throwOnSearchError: true });
+        } catch (err) {
+          // Gamma errored (transient / rate / Cloudflare) — NOT a genuine
+          // no-match. Leave the row 'pending' and stop without advancing the
+          // cursor so this mention is retried next tick, instead of being
+          // permanently silenced as 'skipped_ungrounded'.
+          logger.warn(
+            `x-mentions: gamma lookup failed for ${m.id}, will retry: ${err instanceof Error ? err.message : String(err)}`,
+          );
+          break;
+        }
         if (markets.length === 0) {
           await supabase
             .from('x_mentions')
