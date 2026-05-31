@@ -13,7 +13,9 @@
     "settle-dry-run": "tsx --env-file=.env.local scripts/settle-dry-run.ts",
     "x-auth": "tsx --env-file=.env.local scripts/x-oauth-pin.ts",
     "x-test-tweet": "tsx --env-file=.env.local scripts/x-test-tweet.ts",
-    "x-dry-run": "tsx --env-file=.env.local scripts/x-broadcast-dry-run.ts"
+    "x-whoami": "tsx --env-file=.env.local scripts/x-whoami.ts",
+    "x-dry-run": "tsx --env-file=.env.local scripts/x-broadcast-dry-run.ts",
+    "x-mentions-dry-run": "tsx --env-file=.env.local scripts/x-mentions-dry-run.ts"
   },
   "dependencies": {
     "@polymarket/builder-relayer-client": "^0.0.9",

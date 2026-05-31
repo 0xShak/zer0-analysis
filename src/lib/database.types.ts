@@ -148,6 +148,51 @@ export type Database = {
         };
         Relationships: [];
       };
+      x_mentions: {
+        Row: {
+          mention_id: string;
+          author: string | null;
+          text: string | null;
+          status: 'pending' | 'replied' | 'skipped_ungrounded' | 'rate_capped';
+          reply_id: string | null;
+          created_at: string;
+        };
+        Insert: {
+          mention_id: string;
+          author?: string | null;
+          text?: string | null;
+          status?: 'pending' | 'replied' | 'skipped_ungrounded' | 'rate_capped';
+          reply_id?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          mention_id?: string;
+          author?: string | null;
+          text?: string | null;
+          status?: 'pending' | 'replied' | 'skipped_ungrounded' | 'rate_capped';
+          reply_id?: string | null;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
+      x_mention_cursor: {
+        Row: {
+          id: number;
+          since_id: string | null;
+          updated_at: string;
+        };
+        Insert: {
+          id?: number;
+          since_id?: string | null;
+          updated_at?: string;
+        };
+        Update: {
+          id?: number;
+          since_id?: string | null;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
       trade_recommendations: {
         Row: {
           id: string;

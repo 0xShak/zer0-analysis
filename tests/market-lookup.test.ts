@@ -78,4 +78,25 @@ describe('lookupLiveMarkets', () => {
     });
     expect(hits).toEqual([]);
   });
+
+  it('counts DISTINCT tokens — a repeated word cannot fake overlap=2', async () => {
+    // The X mention bug: "haven't even tweeted ... even" repeated "even", which
+    // substring-matched "seven" in an unrelated market and scored overlap=2.
+    // With dedupe + minOverlap:2 it must NOT match.
+    const seven = market({ question: 'Will there be between seven and nine elections?' });
+    const hits = await lookupLiveMarkets("haven't even tweeted, it's already even", {
+      minOverlap: 2,
+      search: async () => [seven],
+    });
+    expect(hits).toEqual([]);
+  });
+
+  it('still grounds a genuinely specific question at minOverlap:2', async () => {
+    const hits = await lookupLiveMarkets('what about the US x Iran peace deal?', {
+      minOverlap: 2,
+      search: async () => [iran],
+    });
+    expect(hits).toHaveLength(1);
+    expect(hits[0].conditionId).toBe('0xiran');
+  });
 });

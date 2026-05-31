@@ -82,6 +82,14 @@ export const env = {
   // Master switch. When not 'true', the x-broadcast function no-ops, so this
   // code can ship before credentials are wired without crashing any ticks.
   X_POSTING_ENABLED: process.env.X_POSTING_ENABLED ?? 'false',
+  // Master switch for the mention-respond cron (x-mentions Inngest fn).
+  // Independent of X_POSTING_ENABLED so replies can be enabled/disabled without
+  // touching the signal/digest broadcast. When not 'true', the fn no-ops.
+  X_MENTIONS_ENABLED: process.env.X_MENTIONS_ENABLED ?? 'false',
+  // @atzer0_BOT's numeric account id, used as the path param for
+  // GET /2/users/:id/mentions. Mint-free to obtain: `npm run x-whoami` prints
+  // it. Empty by default so the mention-respond fn skips cleanly until it's set.
+  X_BOT_USER_ID: process.env.X_BOT_USER_ID ?? '',
   // OAuth 1.0a user-context credentials. API key/secret are @0xAhrii's app
   // (the X Developer account that holds the Pay-Per-Use project); the access
   // token/secret are @atzer0_BOT's per-user tokens — the persona the tweets

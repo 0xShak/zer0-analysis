@@ -1,6 +1,10 @@
 import { getGroq, GROQ_MODELS } from '../groq';
 import { computeCost } from '../cost/openai-pricing';
 import { logUsage } from '../cost/log';
+import {
+  formatLiveMarketsForSystem,
+  type LiveMarketView,
+} from '../chat/market-lookup';
 
 // Tweet composition for ZER0's public X profile. Same shape as the
 // public-stream summarizers in lib/groq/summarize.ts (Groq with a templated
@@ -10,10 +14,18 @@ import { logUsage } from '../cost/log';
 const TWEET_MAX = 280;
 
 // X counts weighted length (some emoji/CJK = 2); ZER0's copy is ASCII so a
-// plain length cap is safe. Collapse whitespace, then trim to fit with an
-// ellipsis if a model overshoots.
+// plain length cap is safe. Defensively strips URLs and @mentions — every X
+// system prompt already forbids both, but stripping here makes it structural:
+// mention replies thread via the reply id (not a leading @handle) and stay
+// link-free, which keeps them at the cheap write rate. Then collapse
+// whitespace and trim to fit with an ellipsis if a model overshoots.
 export function clampTweet(text: string): string {
-  const t = text.trim().replace(/\s+/g, ' ').replace(/^["']|["']$/g, '');
+  const t = text
+    .replace(/https?:\/\/\S+/gi, '') // strip links
+    .replace(/@\w+/g, '') // strip @mentions — threading uses the reply id
+    .trim()
+    .replace(/\s+/g, ' ')
+    .replace(/^["']|["']$/g, '');
   if (t.length <= TWEET_MAX) return t;
   return t.slice(0, TWEET_MAX - 1).trimEnd() + '…';
 }
@@ -96,6 +108,41 @@ export async function composeDigestTweet(input: DigestInput): Promise<string> {
     DIGEST_SYSTEM,
     `Markets analyzed today: ${input.scanned}\nTrade calls found: ${input.signals}\nMost common category: ${input.topCategory ?? 'mixed'}`,
     'x-digest-tweet',
+  );
+  return text ? clampTweet(text) : fallback;
+}
+
+// Mentions arrive wrapped in noise: a leading chain of @handles X prepends to
+// replies, plus t.co links. Strip both before grounding/composing so the
+// market lookup keys on the actual words and the model never sees the cruft.
+export function stripMentionNoise(text: string): string {
+  return text
+    .replace(/https?:\/\/\S+/gi, '')
+    .replace(/@\w+/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+const MENTION_SYSTEM =
+  "You are ZER0, an autonomous AI agent that trades prediction markets on Polymarket. Someone mentioned you on X (Twitter) asking about a market. Answer their question using ONLY the live Polymarket data provided below — the prices, volume, and resolution dates are authoritative. Write ONE reply tweet, MAX 250 characters, in your voice: direct, confident, specific, no hedging. Quote the live Yes price for the market they're asking about. If the data doesn't actually address their question, say what the market currently shows rather than speculating. No hashtags, no emojis, no @mentions, no markdown, no links, no surrounding quotes. You never call this financial advice. Output only the tweet text.";
+
+export type MentionTweetInput = {
+  question: string; // the mention's text
+  markets: LiveMarketView[]; // grounded live markets (non-empty; caller gates on this)
+};
+
+export async function composeMentionTweet(input: MentionTweetInput): Promise<string> {
+  const top = input.markets[0];
+  // Templated fallback so a Groq 429 still yields a grounded, on-data reply.
+  const fallback = clampTweet(
+    top.yesPrice != null
+      ? `Live on Polymarket: "${top.question}" is trading Yes at ${(top.yesPrice * 100).toFixed(0)}%.`
+      : `That's live on Polymarket right now: "${top.question}".`,
+  );
+  const text = await groqTweet(
+    MENTION_SYSTEM,
+    `Their message: ${input.question}\n\nLive Polymarket data:\n${formatLiveMarketsForSystem(input.markets)}`,
+    'x-mention-tweet',
   );
   return text ? clampTweet(text) : fallback;
 }

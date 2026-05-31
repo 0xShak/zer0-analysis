@@ -6,6 +6,7 @@ import { settlePredictions } from '@/lib/inngest/functions/settle-predictions';
 import { simRun } from '@/lib/inngest/functions/sim-run';
 import { simVerifyPayment } from '@/lib/inngest/functions/sim-verify-payment';
 import { xBroadcast } from '@/lib/inngest/functions/x-broadcast';
+import { xMentions } from '@/lib/inngest/functions/x-mentions';
 
 // Vercel's default function duration is 10s on Hobby, 15s on Pro — far too
 // short for Inngest steps that call OpenAI gpt-5.5-pro (reasoning, can take
@@ -23,5 +24,6 @@ export const { GET, POST, PUT } = serve({
     simRun,
     simVerifyPayment,
     xBroadcast,
+    xMentions,
   ],
 });

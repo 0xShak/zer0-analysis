@@ -51,7 +51,7 @@ function tokenize(s: string): string[] {
 // "Significant" = long enough and meaningful enough to point at a real market.
 // Requires at least one letter (so bare years like "2026" don't count) and not
 // a stopword.
-function significantTokens(s: string): string[] {
+export function significantTokens(s: string): string[] {
   return tokenize(s).filter(
     (t) => t.length >= 4 && /[a-z]/.test(t) && !STOPWORDS.has(t),
   );
@@ -74,6 +74,13 @@ function toView(m: GammaMarket): LiveMarketView {
 
 export interface LookupOpts {
   limit?: number;
+  // Minimum number of the query's significant tokens that must appear in a
+  // market question for it to count as a match. Defaults to 1, which suits
+  // chat (the user deliberately named a market). Callers fed noisier input —
+  // e.g. the X mention-respond cron, where most messages are hype chatter that
+  // coincidentally share ONE common word ("send", "good", "soon") with some
+  // unrelated market — should raise this to 2+ to avoid spurious matches.
+  minOverlap?: number;
   // Injectable for tests.
   search?: typeof searchMarketsLive;
 }
@@ -90,8 +97,12 @@ export async function lookupLiveMarkets(
 ): Promise<LiveMarketView[]> {
   const search = opts.search ?? searchMarketsLive;
   const limit = opts.limit ?? 4;
+  const minOverlap = opts.minOverlap ?? 1;
 
-  const tokens = significantTokens(query);
+  // Distinct significant tokens. Dedupe matters: overlap below is meant to
+  // measure how many DIFFERENT topic words a market question covers, so a query
+  // that merely repeats one common word ("even ... even") must not score 2.
+  const tokens = [...new Set(significantTokens(query))];
   // Gate: a message with no significant token ("hi", "any tips?") is not about
   // a specific market — don't burn a Gamma call or risk injecting noise.
   if (tokens.length === 0) return [];
@@ -116,7 +127,7 @@ export async function lookupLiveMarkets(
       for (const t of tokens) if (hay.includes(t)) overlap += 1;
       return { m, overlap };
     })
-    .filter((x) => x.overlap >= 1)
+    .filter((x) => x.overlap >= minOverlap)
     .sort(
       (a, b) =>
         b.overlap - a.overlap ||

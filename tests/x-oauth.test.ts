@@ -54,4 +54,12 @@ describe('clampTweet', () => {
     expect(out.length).toBeLessThanOrEqual(280);
     expect(out.endsWith('…')).toBe(true);
   });
+  it('strips URLs so replies stay link-free', () => {
+    expect(clampTweet('YES is the play https://polymarket.com/event/x now')).toBe(
+      'YES is the play now',
+    );
+  });
+  it('strips @mentions (replies thread via the reply id, not a leading @)', () => {
+    expect(clampTweet('@someone YES at 0.62, clear edge')).toBe('YES at 0.62, clear edge');
+  });
 });
