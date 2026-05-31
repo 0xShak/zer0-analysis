@@ -86,6 +86,12 @@ export const env = {
   // Independent of X_POSTING_ENABLED so replies can be enabled/disabled without
   // touching the signal/digest broadcast. When not 'true', the fn no-ops.
   X_MENTIONS_ENABLED: process.env.X_MENTIONS_ENABLED ?? 'false',
+  // Master switch for OPINIONATED mention replies: when 'true', a grounded
+  // mention is run through web research + the reply-analyzer (a probability
+  // estimate vs the market price → fair/over/under verdict) instead of just
+  // quoting the price. When 'false' (default) the mention cron behaves exactly
+  // as before. Independent of X_MENTIONS_ENABLED so it can ship dark.
+  X_MENTION_ANALYSIS_ENABLED: process.env.X_MENTION_ANALYSIS_ENABLED ?? 'false',
   // @atzer0_BOT's numeric account id, used as the path param for
   // GET /2/users/:id/mentions. Mint-free to obtain: `npm run x-whoami` prints
   // it. Empty by default so the mention-respond fn skips cleanly until it's set.
@@ -98,6 +104,19 @@ export const env = {
   get X_API_SECRET() { return need('X_API_SECRET'); },
   get X_ACCESS_TOKEN() { return need('X_ACCESS_TOKEN'); },
   get X_ACCESS_TOKEN_SECRET() { return need('X_ACCESS_TOKEN_SECRET'); },
+
+  // ---- Web research (Tavily) + opinionated reply analysis ----
+  // Feeds fresh news context into ZER0's mention takes. RESEARCH_ENABLED gates
+  // the search call independently of X_MENTION_ANALYSIS_ENABLED, so analysis
+  // can run prompt-only (no web) if research is off or rate-limited.
+  RESEARCH_ENABLED: process.env.RESEARCH_ENABLED ?? 'false',
+  // Tavily API key — only read when RESEARCH_ENABLED is 'true'.
+  get RESEARCH_API_KEY() { return need('RESEARCH_API_KEY'); },
+  RESEARCH_BASE_URL: process.env.RESEARCH_BASE_URL ?? 'https://api.tavily.com',
+  // Model for the opinionated mention take (probability estimate + verdict).
+  // Separate from the brain's ANALYZER_MODEL so public takes run on a cheaper
+  // model than the trading brain. Must exist in cost/openai-pricing.ts.
+  MENTION_ANALYSIS_MODEL: process.env.MENTION_ANALYSIS_MODEL ?? 'gpt-5.5',
 
   // ---- MiroShark (Track B / VPS) — run-a-sim integration ----
   // Public base URL + bearer token for the self-hosted MiroShark API. Both

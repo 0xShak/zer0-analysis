@@ -2,9 +2,63 @@ import { cron } from 'inngest';
 import { inngest } from '../client';
 import { createAdminClient } from '../../supabase/admin';
 import { getMentions, postTweet } from '../../x/client';
-import { composeMentionTweet, stripMentionNoise } from '../../x/compose';
-import { lookupLiveMarkets } from '../../chat/market-lookup';
+import { composeMentionTweet, composeOpinionTweet, stripMentionNoise } from '../../x/compose';
+import { lookupLiveMarkets, type LiveMarketView } from '../../chat/market-lookup';
 import { env } from '../../env';
+import { isUnderDailyBudget } from '../../cost/budget';
+import { logUsage } from '../../cost/log';
+import { runResearch, formatResearchForPrompt } from '../../research/client';
+import { analyzeForReply } from '../../agents/reply-analyzer';
+
+// Opinionated reply path: research the grounded market, estimate a probability
+// vs the market price, and compose a fair/over/under take. Returns null on ANY
+// failure (no price, research/analysis error, no verdict) so the caller falls
+// back to the plain price-quote reply — this branch can never break the
+// existing working path. Logs both the model and research spend.
+async function tryOpinionReply(
+  top: LiveMarketView,
+  logger: { warn: (msg: string) => void },
+): Promise<string | null> {
+  try {
+    if (typeof top.yesPrice !== 'number') return null; // need a YES price to assess
+    const research = await runResearch(top.question);
+    const researchContext = formatResearchForPrompt(research);
+    const hoursToRes = top.endDate
+      ? Math.max(0, (new Date(top.endDate).getTime() - Date.now()) / 3_600_000)
+      : 0;
+    const current_prices = [
+      top.yesPrice,
+      ...(typeof top.noPrice === 'number' ? [top.noPrice] : []),
+    ];
+    const res = await analyzeForReply({
+      question: top.question,
+      resolutionSource: top.resolutionSource ?? undefined,
+      outcomes: ['Yes', 'No'],
+      current_prices,
+      liquidity_usd: top.liquidityUsd,
+      volume_24h_usd: top.volumeUsd,
+      end_date: top.endDate ?? '',
+      hours_to_resolution: hoursToRes,
+      researchContext,
+    });
+    void logUsage({
+      provider: 'openai',
+      model: res.model,
+      tokens_in: res.tokens_in,
+      tokens_out: res.tokens_out,
+      cached_tokens: res.cached_tokens,
+      cost_usd: res.cost_usd,
+      step: 'x-mention-analysis',
+    }).catch(() => {});
+    if (!res.verdict) return null;
+    return composeOpinionTweet({ question: top.question, verdict: res.verdict });
+  } catch (err) {
+    logger.warn(
+      `x-mentions: opinion analysis failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return null;
+  }
+}
 
 // Replies to mentions of ZER0 on its public X profile (@atzer0_BOT), but only
 // when the mention names a market ZER0 can answer from LIVE Polymarket data.
@@ -38,6 +92,11 @@ export const xMentions = inngest.createFunction(
     // market before replying so a single common word ("send", "good") can't
     // false-match an unrelated market. Tunable without a deploy.
     const minOverlap = parseInt(process.env.X_MENTION_MIN_OVERLAP ?? '2', 10);
+    // Opinionated takes (research + probability estimate vs market). Off by
+    // default; capped per tick because each take runs a reasoning-model call
+    // that must fit the 60s step budget (≤1 keeps us well clear).
+    const analysisOn = (process.env.X_MENTION_ANALYSIS_ENABLED ?? 'false') === 'true';
+    const maxPerTick = parseInt(process.env.X_MENTION_ANALYSIS_MAX_PER_TICK ?? '1', 10);
 
     const result = await step.run('respond-mentions', async () => {
       // ── Cursor: only fetch mentions newer than last time ──────────────────
@@ -65,6 +124,21 @@ export const xMentions = inngest.createFunction(
         .eq('status', 'replied')
         .gte('created_at', hourAgo);
       let budget = Math.max(0, hourlyCap - (repliedLastHour ?? 0));
+
+      // Opinionated-analysis daily $ guard — checked ONCE per tick (shared with
+      // the brain's OpenAI budget). Over budget → still reply via price-quote,
+      // never go silent on a grounded market.
+      let analysisBudgetOk = false;
+      if (analysisOn) {
+        const b = await isUnderDailyBudget('openai');
+        analysisBudgetOk = b.underBudget;
+        if (!analysisBudgetOk) {
+          logger.warn(
+            `x-mentions: analysis over daily budget ($${b.spentUsd.toFixed(2)}/$${b.budgetUsd}); using price-quote replies`,
+          );
+        }
+      }
+      let analyzedThisTick = 0;
 
       // What have we already decided on? (one read instead of one-per-mention)
       const ids = fetched.mentions.map((m) => m.id);
@@ -146,7 +220,15 @@ export const xMentions = inngest.createFunction(
           continue;
         }
 
-        const text = await composeMentionTweet({ question: clean, markets });
+        // Opinionated take first (if enabled, under budget, and within the
+        // per-tick cap); otherwise / on any failure, the plain price-quote
+        // reply. Either way `text` is a grounded reply to this market.
+        let text: string | null = null;
+        if (analysisOn && analysisBudgetOk && analyzedThisTick < maxPerTick) {
+          text = await tryOpinionReply(markets[0], logger);
+          if (text) analyzedThisTick += 1;
+        }
+        text ??= await composeMentionTweet({ question: clean, markets });
         const res = await postTweet(text, m.id);
         if (res.ok) {
           await supabase

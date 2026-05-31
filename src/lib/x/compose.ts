@@ -5,6 +5,7 @@ import {
   formatLiveMarketsForSystem,
   type LiveMarketView,
 } from '../chat/market-lookup';
+import type { ReplyVerdict } from '../agents/validators';
 
 // Tweet composition for ZER0's public X profile. Same shape as the
 // public-stream summarizers in lib/groq/summarize.ts (Groq with a templated
@@ -145,4 +146,30 @@ export async function composeMentionTweet(input: MentionTweetInput): Promise<str
     'x-mention-tweet',
   );
   return text ? clampTweet(text) : fallback;
+}
+
+// Deterministic, number-guaranteed opinion tweet — the safety net when the
+// analyzer's own `take` is somehow unusable. Always states ZER0's estimate vs
+// the market price and the gap, so the reply meets the requirement even bare.
+function buildOpinionFallback(question: string, v: ReplyVerdict): string {
+  const est = Math.round(v.my_estimate * 100);
+  const mkt = Math.round(v.market_price * 100);
+  const sign = v.gap_pp > 0 ? '+' : '';
+  const line =
+    v.verdict === 'FAIR'
+      ? 'Priced about right.'
+      : v.verdict === 'OVER'
+        ? "Market's overpricing this. Room to fade."
+        : "Market's underpricing this. Room to run.";
+  return clampTweet(`Market has "${question}" at ${mkt}%. My read: ~${est}% (${sign}${v.gap_pp}pp gap). ${line}`);
+}
+
+// Composes the opinionated reply. The analyzer's `take` already comes from the
+// reasoning model in ZER0's voice and is instructed to state estimate-vs-market
+// + verdict, so we use it directly (clampTweet strips any stray @/links and
+// caps length) rather than re-polishing it through the weaker Groq model.
+// Falls back to the number-guaranteed template if the take is unusable.
+export function composeOpinionTweet(input: { question: string; verdict: ReplyVerdict }): string {
+  const t = clampTweet(input.verdict.take);
+  return t.length >= 20 ? t : buildOpinionFallback(input.question, input.verdict);
 }

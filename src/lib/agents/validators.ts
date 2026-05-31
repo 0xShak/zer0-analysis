@@ -79,6 +79,80 @@ export function validateAnalysisOutput(
   };
 }
 
+// ─── Opinionated mention-reply verdict (lib/agents/reply-analyzer.ts) ────────
+// Verdict-shaped sibling of AnalysisOutput. Unlike the trade path, a "fairly
+// priced" read is a VALID, common outcome (FAIR) — not a rejection — and there
+// is no token_id / position sizing. Used by the X mention opinion reply.
+
+export type ReplyVerdict = {
+  my_estimate: number; // ZER0's probability for YES, [0,1]
+  market_price: number; // live YES price, [0,1]
+  gap_pp: number; // (my_estimate - market_price) in percentage points
+  verdict: 'FAIR' | 'OVER' | 'UNDER'; // OVER = market overpricing YES; UNDER = underpricing
+  confidence: number; // [0,1]
+  take: string; // tweet-shaped read
+};
+
+export type ReplyVerdictResult =
+  | { ok: true; value: ReplyVerdict }
+  | { ok: false; reason: string };
+
+// Edge threshold (percentage points) below which we call the market FAIR —
+// mirrors the brain's >10pp mispricing bar in the superforecaster prompt.
+const FAIR_BAND_PP = 10;
+
+export function validateReplyVerdict(raw: unknown): ReplyVerdictResult {
+  if (typeof raw !== 'object' || raw === null) {
+    return { ok: false, reason: 'not an object' };
+  }
+  const obj = raw as Record<string, unknown>;
+  const myEstimate = obj.my_estimate;
+  const marketPrice = obj.market_price;
+  const confidence = obj.confidence;
+  const take = obj.take;
+
+  if (typeof myEstimate !== 'number' || myEstimate < 0 || myEstimate > 1) {
+    return { ok: false, reason: 'my_estimate not in [0,1]' };
+  }
+  if (typeof marketPrice !== 'number' || marketPrice < 0 || marketPrice > 1) {
+    return { ok: false, reason: 'market_price not in [0,1]' };
+  }
+  if (typeof confidence !== 'number' || confidence < 0 || confidence > 1) {
+    return { ok: false, reason: 'confidence not in [0,1]' };
+  }
+  if (typeof take !== 'string' || take.trim().length < 20) {
+    return { ok: false, reason: 'take too short' };
+  }
+
+  // Derive the gap and verdict ourselves so they're internally consistent even
+  // if the model's own verdict/gap fields are sloppy. Positive gap = ZER0's
+  // estimate above the market = market UNDERpricing YES.
+  const gap_pp = Math.round((myEstimate - marketPrice) * 100);
+  const verdict: ReplyVerdict['verdict'] =
+    Math.abs(gap_pp) < FAIR_BAND_PP ? 'FAIR' : gap_pp > 0 ? 'UNDER' : 'OVER';
+
+  return {
+    ok: true,
+    value: { my_estimate: myEstimate, market_price: marketPrice, gap_pp, verdict, confidence, take },
+  };
+}
+
+// Strict JSON schema for the reply verdict (OpenAI structured outputs). `gap_pp`
+// and `verdict` are requested from the model but recomputed in validateReplyVerdict.
+export const REPLY_VERDICT_JSON_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['my_estimate', 'market_price', 'gap_pp', 'verdict', 'confidence', 'take'],
+  properties: {
+    my_estimate: { type: 'number', minimum: 0, maximum: 1 },
+    market_price: { type: 'number', minimum: 0, maximum: 1 },
+    gap_pp: { type: 'number' },
+    verdict: { type: 'string', enum: ['FAIR', 'OVER', 'UNDER'] },
+    confidence: { type: 'number', minimum: 0, maximum: 1 },
+    take: { type: 'string', minLength: 20, maxLength: 500 },
+  },
+} as const;
+
 // JSON Schema mirroring the AnalysisOutput shape. Used for OpenAI
 // structured outputs (response_format: json_schema).
 export const ANALYSIS_JSON_SCHEMA = {

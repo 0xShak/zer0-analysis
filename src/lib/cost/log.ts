@@ -1,7 +1,7 @@
 import { createAdminClient } from '../supabase/admin';
 
 export type LogUsageInput = {
-  provider: 'openai' | 'groq';
+  provider: 'openai' | 'groq' | 'tavily';
   model: string;
   tokens_in: number;
   tokens_out: number;
