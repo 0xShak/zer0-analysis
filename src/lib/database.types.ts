@@ -790,6 +790,68 @@ export type Database = {
         };
         Relationships: [];
       };
+      pro_orders: {
+        Row: {
+          id: string;
+          wallet_address: string;
+          session_id: string | null;
+          state: 'AWAITING_PAYMENT' | 'PAID' | 'EXPIRED';
+          price_usd: number;
+          price_zer0: number;
+          // numeric(78,0) — PostgREST returns numeric as a string to preserve
+          // precision; these are BigInt-sized, so always read them as strings.
+          amount_base_units: string;
+          token_address: string;
+          pay_to_address: string;
+          from_block: string;
+          pay_tx_hash: string | null;
+          paid_at: string | null;
+          entitlement_id: string | null;
+          error: string | null;
+          expires_at: string;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          wallet_address: string;
+          session_id?: string | null;
+          state?: 'AWAITING_PAYMENT' | 'PAID' | 'EXPIRED';
+          price_usd: number;
+          price_zer0: number;
+          amount_base_units: string;
+          token_address: string;
+          pay_to_address: string;
+          from_block: string;
+          pay_tx_hash?: string | null;
+          paid_at?: string | null;
+          entitlement_id?: string | null;
+          error?: string | null;
+          expires_at?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          wallet_address?: string;
+          session_id?: string | null;
+          state?: 'AWAITING_PAYMENT' | 'PAID' | 'EXPIRED';
+          price_usd?: number;
+          price_zer0?: number;
+          amount_base_units?: string;
+          token_address?: string;
+          pay_to_address?: string;
+          from_block?: string;
+          pay_tx_hash?: string | null;
+          paid_at?: string | null;
+          entitlement_id?: string | null;
+          error?: string | null;
+          expires_at?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
       simulations: {
         Row: {
           id: string;

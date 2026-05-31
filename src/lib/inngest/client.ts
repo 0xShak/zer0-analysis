@@ -48,3 +48,20 @@ export const simPaymentSubmitted = eventType('sim/payment.submitted', {
     txHash?: string | null; // fast-path hash if the wallet returned one
   }>(),
 });
+
+// Fired by /api/pro/verify the moment the browser submits the $ZER0 PRO
+// payment, BEFORE depending on the wallet-returned hash. The durable
+// pro-verify-payment function scans Base for the payer→sink transfer and grants
+// the 30-day entitlement when it lands — so a dropped browser response / RPC
+// flake can't lose a payment that actually mined. Same robustness as the sim
+// flow (sim/payment.submitted).
+export const proPaymentSubmitted = eventType('pro/payment.submitted', {
+  schema: staticSchema<{
+    orderId: string;
+    expectedFrom: string; // payer wallet — REQUIRED for attribution
+    sink: string; // pro_orders.pay_to_address
+    amountBaseUnits: string; // stringified bigint
+    fromBlock: string; // chain tip captured at quote time (stringified bigint)
+    txHash?: string | null; // fast-path hash if the browser returned one
+  }>(),
+});

@@ -3,6 +3,7 @@ import { inngest } from '@/lib/inngest/client';
 import { brainTick } from '@/lib/inngest/functions/brain-tick';
 import { chatRespond } from '@/lib/inngest/functions/chat-respond';
 import { settlePredictions } from '@/lib/inngest/functions/settle-predictions';
+import { proVerifyPayment } from '@/lib/inngest/functions/pro-verify-payment';
 import { simRun } from '@/lib/inngest/functions/sim-run';
 import { simVerifyPayment } from '@/lib/inngest/functions/sim-verify-payment';
 import { xBroadcast } from '@/lib/inngest/functions/x-broadcast';
@@ -20,6 +21,7 @@ export const { GET, POST, PUT } = serve({
   functions: [
     brainTick,
     chatRespond,
+    proVerifyPayment,
     settlePredictions,
     simRun,
     simVerifyPayment,

@@ -134,4 +134,35 @@ export const env = {
   // Human-readable $ZER0 amount charged per sim (e.g. '1000'). Multiplied by
   // 10^decimals at verify time. Needed only when the payment gate is on.
   get ZER0_SIM_PRICE() { return need('ZER0_SIM_PRICE'); },
+
+  // ---- PRO unlock paid in $ZER0 on Base (replaces Coinbase/USDC) ----
+  // Master switch, mirroring ZER0_SIM_PAYMENT_ENABLED. While 'false' (default),
+  // the /api/pro/* routes return payment_disabled so the feature can deploy
+  // before the price feed / sink are confirmed. Flip to 'true' once the
+  // landing page (zer0-FE) is live and the token/price are finalized.
+  ZER0_PRO_PAYMENT_ENABLED: process.env.ZER0_PRO_PAYMENT_ENABLED ?? 'false',
+  // USD price PRO is pegged to. The quote converts this to a $ZER0 amount at
+  // the live token price, so the dollar value stays ~constant as $ZER0 moves.
+  PRO_PRICE_USD: process.env.PRO_PRICE_USD ?? '5',
+  // How many days a confirmed PRO payment unlocks.
+  PRO_ENTITLEMENT_DAYS: process.env.PRO_ENTITLEMENT_DAYS ?? '30',
+  // Where the PRO fee lands. Defaults to the canonical dead address (burn),
+  // matching the per-sim sink. Override to point at a treasury instead.
+  ZER0_PRO_SINK_ADDRESS:
+    process.env.ZER0_PRO_SINK_ADDRESS ??
+    '0x000000000000000000000000000000000000dEaD',
+  // Live $ZER0/USD price source. Defaults to DexScreener's keyless tokens
+  // endpoint; {token} is replaced with ZER0_TOKEN_ADDRESS. Must return the
+  // DexScreener `pairs[].priceUsd` shape (see lib/web3/zer0-price.ts).
+  ZER0_PRICE_SOURCE_URL:
+    process.env.ZER0_PRICE_SOURCE_URL ??
+    'https://api.dexscreener.com/latest/dex/tokens/{token}',
+  // Comma-separated origins allowed to call the CORS-enabled /api/pro/* routes
+  // (the landing site pays cross-origin). '*' allows any — safe here because
+  // these routes carry no cookies and verify every payment on-chain.
+  PRO_CORS_ORIGINS: process.env.PRO_CORS_ORIGINS ?? '*',
+  // Public URL of the pricing page (zer0-FE), linked from the in-app paywall
+  // banner so a rate-limited user can go pay in $ZER0.
+  NEXT_PUBLIC_PRICING_URL:
+    process.env.NEXT_PUBLIC_PRICING_URL ?? 'https://atzer0.xyz/#price',
 };

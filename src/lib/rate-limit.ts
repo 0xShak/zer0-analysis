@@ -21,11 +21,27 @@ export async function incrementAndCheck(
 
 export async function hasActiveEntitlement(
   supabase: SupabaseClient<Database>,
-  args: { sessionId?: string; userId?: string },
+  args: { sessionId?: string; userId?: string; walletAddress?: string },
 ): Promise<boolean> {
   const now = new Date().toISOString();
+
+  // Resolve the user behind a connected wallet, so a PRO unlock bought on the
+  // (cross-origin) landing page — which keys the entitlement to the payer's
+  // wallet → users.id — is recognized in the app the moment that wallet is
+  // connected. This is the only durable link between a landing-page payment
+  // and an app user, since they share no session cookie.
+  let userId = args.userId;
+  if (!userId && args.walletAddress) {
+    const { data: user } = await supabase
+      .from('users')
+      .select('id')
+      .eq('wallet_address', args.walletAddress.toLowerCase())
+      .maybeSingle();
+    userId = user?.id ?? undefined;
+  }
+
   let q = supabase.from('entitlements').select('id').gt('unlocked_until', now).limit(1);
-  if (args.userId) q = q.eq('user_id', args.userId);
+  if (userId) q = q.eq('user_id', userId);
   else if (args.sessionId) q = q.eq('session_id', args.sessionId);
   else return false;
   const { data } = await q;

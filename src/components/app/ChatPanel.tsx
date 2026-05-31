@@ -9,7 +9,11 @@ export type ChatPanelHandle = {
   reset: () => void;
 };
 
-type Paywall = { hosted_url?: string } | null;
+type Paywall = { unlocked: boolean } | null;
+
+// Where to send a rate-limited user to buy PRO (the zer0-FE pricing page).
+const PRICING_URL =
+  process.env.NEXT_PUBLIC_PRICING_URL ?? 'https://atzer0.xyz/#price';
 
 let mid = 0;
 const nextId = () => `m_${Date.now()}_${++mid}`;
@@ -54,8 +58,8 @@ async function consumeSseStream(
 
 export const ChatPanel = forwardRef<
   ChatPanelHandle,
-  { onMessageSent?: () => void }
->(function ChatPanel({ onMessageSent }, ref) {
+  { onMessageSent?: () => void; walletAddress?: string }
+>(function ChatPanel({ onMessageSent, walletAddress }, ref) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [sessionId, setSessionId] = useState<string | undefined>();
   const [busy, setBusy] = useState(false);
@@ -96,7 +100,11 @@ export const ChatPanel = forwardRef<
     try {
       const res = await fetch('/api/chat', {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: {
+          'content-type': 'application/json',
+          // Lets a PRO unlock paid from the connected wallet be recognized here.
+          ...(walletAddress ? { 'x-wallet-address': walletAddress } : {}),
+        },
         body: JSON.stringify({ message: text, session_id: sessionId }),
       });
 
@@ -106,14 +114,9 @@ export const ChatPanel = forwardRef<
       if (res.status === 402) {
         const json = (await res.json().catch(() => ({}))) as {
           paywall?: boolean;
-          placeholder_charge_url?: string | null;
-          hosted_url?: string;
         };
         if (json.paywall) {
-          setPaywall({
-            hosted_url:
-              json.hosted_url ?? json.placeholder_charge_url ?? undefined,
-          });
+          setPaywall({ unlocked: false });
           // drop the empty assistant placeholder
           setMessages((prev) => prev.filter((m) => m.id !== assistantId));
         }
@@ -168,21 +171,18 @@ export const ChatPanel = forwardRef<
       {paywall ? (
         <div className="mx-auto w-full max-w-3xl px-4 sm:px-6">
           <div className="glass mb-3 rounded-2xl px-4 py-3 text-sm text-zinc-200">
-            you&apos;ve hit the anonymous chat limit.{' '}
-            {paywall.hosted_url ? (
-              <a
-                href={paywall.hosted_url}
-                target="_blank"
-                rel="noreferrer"
-                className="font-medium text-emerald-400 underline-offset-2 hover:underline"
-              >
-                unlock 30 days for $5 USDC →
-              </a>
-            ) : (
-              <span className="text-zinc-400">
-                payments aren&apos;t live yet — try again tomorrow.
-              </span>
-            )}
+            you&apos;ve hit the daily chat limit.{' '}
+            <a
+              href={PRICING_URL}
+              target="_blank"
+              rel="noreferrer"
+              className="font-medium text-emerald-400 underline-offset-2 hover:underline"
+            >
+              unlock 30 days with $ZER0 →
+            </a>
+            <span className="block text-xs text-zinc-500">
+              pay with $ZER0 on Base, then connect that same wallet here.
+            </span>
           </div>
         </div>
       ) : null}

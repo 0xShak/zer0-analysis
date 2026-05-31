@@ -33,7 +33,11 @@ export default function AppPage() {
 
       <div className="flex min-h-0 flex-col">
         <ChatHeader walletAddress={wallet} onWalletConnect={setWallet} />
-        <ChatPanel ref={chatRef} onMessageSent={onMessageSent} />
+        <ChatPanel
+          ref={chatRef}
+          onMessageSent={onMessageSent}
+          walletAddress={wallet}
+        />
       </div>
     </main>
   );

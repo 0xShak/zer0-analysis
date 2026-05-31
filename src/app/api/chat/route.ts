@@ -122,11 +122,21 @@ export async function POST(req: NextRequest) {
     }
 
     // ---- rate limit ----
+    // Connected wallet (lowercased) from the app — lets a PRO unlock bought on
+    // the landing page (entitlement keyed to the payer's wallet) be recognized
+    // here the moment that wallet is connected.
+    const walletHeader = req.headers.get('x-wallet-address');
+    const walletAddress =
+      walletHeader && /^0x[0-9a-fA-F]{40}$/.test(walletHeader)
+        ? walletHeader.toLowerCase()
+        : undefined;
+
     const rate = await checkRateLimit(supabase, fingerprint, userId);
     if (!rate.allowed) {
       const entitled = await hasActiveEntitlement(supabase, {
         sessionId,
         userId: userId ?? undefined,
+        walletAddress,
       });
       if (!entitled) {
         // Observability breadcrumb. prompt1 §3: scope='app' so it never
