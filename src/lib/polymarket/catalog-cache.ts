@@ -13,7 +13,7 @@ import type { Json } from '../database.types';
 
 // Compact record we persist per market — only the fields toView/search need,
 // to keep the JSON blob small (a few hundred KB rather than several MB).
-interface CachedMarket {
+export interface CachedMarket {
   conditionId: string;
   question: string;
   yes: number | null;
@@ -119,20 +119,60 @@ function words(s: string): string[] {
   ];
 }
 
-// Drop-in for the old searchMarketsLive: returns up to `limit` candidate
-// markets from the cached catalog, ranked by how many distinct query words
-// appear in the question (tie-break: total volume).
+// Drop-in for the old searchMarketsLive. Unlike /public-search (which ranked by
+// Polymarket's own relevance), we're matching words across 5000 markets, so raw
+// overlap count is too loose: ANY two common words ("next", "before") coincide
+// with SOME market. We weight by rarity instead — a query token's document
+// frequency across the catalog tells us how distinctive it is. A market is only
+// a candidate if it shares a DISTINCTIVE token (one that's rare in the catalog),
+// which is what makes "switzerland"/"initiative" real and "next"/"before" noise.
 export async function searchCatalog(query: string, limit = 12): Promise<GammaMarket[]> {
+  const catalog = await loadCatalog();
+  return rankCatalog(query, catalog).slice(0, limit);
+}
+
+// Pure ranking core (no I/O) so the rarity gate is unit-testable.
+export function rankCatalog(query: string, catalog: CachedMarket[]): GammaMarket[] {
   const qw = words(query);
   if (qw.length === 0) return [];
-  const catalog = await loadCatalog();
-  const scored: { c: CachedMarket; overlap: number }[] = [];
-  for (const c of catalog) {
-    const hay = c.question.toLowerCase();
-    let overlap = 0;
-    for (const w of qw) if (hay.includes(w)) overlap += 1;
-    if (overlap > 0) scored.push({ c, overlap });
+  if (catalog.length === 0) return [];
+
+  const hays = catalog.map((c) => c.question.toLowerCase());
+
+  // Document frequency of each query token across the catalog.
+  const df = new Map<string, number>(qw.map((w) => [w, 0]));
+  for (const hay of hays) {
+    for (const w of qw) if (hay.includes(w)) df.set(w, (df.get(w) ?? 0) + 1);
   }
-  scored.sort((a, b) => b.overlap - a.overlap || b.c.vol - a.c.vol);
-  return scored.slice(0, limit).map((x) => toGamma(x.c));
+  // "Distinctive" = appears in at most ~0.6% of markets (≈30 of 5000). Common
+  // filler words ("next", "before", "fully") blow past this and don't count.
+  const rareMax = Math.max(25, Math.floor(catalog.length * 0.006));
+  const distinctive = new Set(qw.filter((w) => {
+    const f = df.get(w) ?? 0;
+    return f > 0 && f <= rareMax;
+  }));
+  // Need at least TWO distinctive terms in the query. One rare word coinciding
+  // with some market is a fluke ("stage" → an esports market); two distinctive
+  // words landing on the SAME market ("switzerland" + "initiative") is a real
+  // reference. Conservative on purpose: silence beats a wrong public reply.
+  if (distinctive.size < 2) return [];
+
+  const scored: { c: CachedMarket; distinct: number; total: number }[] = [];
+  for (let i = 0; i < catalog.length; i++) {
+    const hay = hays[i];
+    let distinct = 0;
+    let total = 0;
+    for (const w of qw) {
+      if (hay.includes(w)) {
+        total += 1;
+        if (distinctive.has(w)) distinct += 1;
+      }
+    }
+    // Must share at least TWO distinctive tokens to be a candidate.
+    if (distinct >= 2) scored.push({ c: catalog[i], distinct, total });
+  }
+  scored.sort(
+    (a, b) => b.distinct - a.distinct || b.total - a.total || b.c.vol - a.c.vol,
+  );
+  return scored.map((x) => toGamma(x.c));
 }
