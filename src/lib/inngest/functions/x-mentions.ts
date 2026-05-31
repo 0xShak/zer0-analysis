@@ -75,8 +75,18 @@ async function tryOpinionReply(
 //
 // Structurally a sibling of x-broadcast: decoupled from brain-tick, every-15-
 // min cron, cheap indexed Supabase reads, no-op unless its flag is 'true'.
+// Poll cadence is env-tunable (read at function registration). Default every
+// 3 min so replies feel timely. Faster = lower latency but more getMentions
+// calls against X's rate limit — if you see getMentions 429s, raise it. A
+// shorter interval does NOT increase reply volume: the hourly cap still bounds
+// that; it only shortens time-to-reply. Changing it needs a deploy + Inngest
+// Apps→Resync (the cron schedule is registered with Inngest).
 export const xMentions = inngest.createFunction(
-  { id: 'zer0-x-mentions', name: 'ZER0 X mention-respond', triggers: [cron('*/15 * * * *')] },
+  {
+    id: 'zer0-x-mentions',
+    name: 'ZER0 X mention-respond',
+    triggers: [cron(process.env.X_MENTIONS_CRON ?? '*/3 * * * *')],
+  },
   async ({ step, logger }) => {
     if ((process.env.X_MENTIONS_ENABLED ?? 'false') !== 'true') {
       return { skipped: 'X_MENTIONS_ENABLED is not true' };

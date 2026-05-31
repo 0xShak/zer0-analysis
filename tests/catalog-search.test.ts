@@ -17,7 +17,8 @@ const filler = Array.from({ length: 60 }, (_, i) =>
 const swiss = mkt(
   'Will the No to ten million Switzerland initiative be approved in the 2026 popular vote?',
 );
-const catalog = [...filler, swiss];
+const moonshot = mkt('Will Moonshot have the best Math AI model at the end of May 2026?');
+const catalog = [...filler, swiss, moonshot];
 
 describe('rankCatalog rarity gate', () => {
   it('grounds a question with two distinctive tokens', () => {
@@ -34,5 +35,11 @@ describe('rankCatalog rarity gate', () => {
     // Only "switzerland" is distinctive here ("approved" appears nowhere else,
     // but a single rare word is a fluke, not a reference).
     expect(rankCatalog('switzerland', catalog)).toEqual([]);
+  });
+
+  it('does not ground idioms via substring matches', () => {
+    // "let him do the math, give it a shot" — "math" is whole-word (1), but
+    // "shot" must NOT match "MoonSHOT", so only 1 distinctive token → silent.
+    expect(rankCatalog('let him do the math, give it a shot', catalog)).toEqual([]);
   });
 });

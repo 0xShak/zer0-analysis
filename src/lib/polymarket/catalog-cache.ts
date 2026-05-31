@@ -10,6 +10,7 @@
 import { fetchActiveCatalog, type GammaMarket } from './gamma';
 import { createAdminClient } from '../supabase/admin';
 import type { Json } from '../database.types';
+import { containsWord } from '../chat/word-match';
 
 // Compact record we persist per market — only the fields toView/search need,
 // to keep the JSON blob small (a few hundred KB rather than several MB).
@@ -142,7 +143,7 @@ export function rankCatalog(query: string, catalog: CachedMarket[]): GammaMarket
   // Document frequency of each query token across the catalog.
   const df = new Map<string, number>(qw.map((w) => [w, 0]));
   for (const hay of hays) {
-    for (const w of qw) if (hay.includes(w)) df.set(w, (df.get(w) ?? 0) + 1);
+    for (const w of qw) if (containsWord(hay, w)) df.set(w, (df.get(w) ?? 0) + 1);
   }
   // "Distinctive" = appears in at most ~0.6% of markets (≈30 of 5000). Common
   // filler words ("next", "before", "fully") blow past this and don't count.
@@ -163,7 +164,7 @@ export function rankCatalog(query: string, catalog: CachedMarket[]): GammaMarket
     let distinct = 0;
     let total = 0;
     for (const w of qw) {
-      if (hay.includes(w)) {
+      if (containsWord(hay, w)) {
         total += 1;
         if (distinctive.has(w)) distinct += 1;
       }

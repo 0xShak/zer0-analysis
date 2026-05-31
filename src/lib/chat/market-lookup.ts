@@ -16,6 +16,7 @@
 
 import { type GammaMarket } from '../polymarket/gamma';
 import { searchCatalog } from '../polymarket/catalog-cache';
+import { containsWord } from './word-match';
 
 export interface LiveMarketView {
   question: string;
@@ -132,7 +133,7 @@ export async function lookupLiveMarkets(
     .map((m) => {
       const hay = m.question.toLowerCase();
       let overlap = 0;
-      for (const t of tokens) if (hay.includes(t)) overlap += 1;
+      for (const t of tokens) if (containsWord(hay, t)) overlap += 1;
       return { m, overlap };
     })
     .filter((x) => x.overlap >= minOverlap)
