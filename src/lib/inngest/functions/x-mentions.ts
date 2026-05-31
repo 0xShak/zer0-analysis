@@ -85,6 +85,8 @@ export const xMentions = inngest.createFunction(
       let cursorTo: string | undefined = sinceId;
       let replied = 0;
       let skipped = 0;
+      // Surfaces the exact stage/reason a tick stopped, in the function Output.
+      let diag: string | undefined;
 
       for (const m of ordered) {
         const prior = statusById.get(m.id);
@@ -129,9 +131,9 @@ export const xMentions = inngest.createFunction(
           // no-match. Leave the row 'pending' and stop without advancing the
           // cursor so this mention is retried next tick, instead of being
           // permanently silenced as 'skipped_ungrounded'.
-          logger.warn(
-            `x-mentions: gamma lookup failed for ${m.id}, will retry: ${err instanceof Error ? err.message : String(err)}`,
-          );
+          const msg = err instanceof Error ? err.message : String(err);
+          logger.warn(`x-mentions: gamma lookup failed for ${m.id}, will retry: ${msg}`);
+          diag = `gamma_failed @${m.id}: ${msg.slice(0, 300)}`;
           break;
         }
         if (markets.length === 0) {
@@ -159,6 +161,7 @@ export const xMentions = inngest.createFunction(
           // post failure is usually a transient rate/auth issue (see the 403/
           // 401 notes in x-test-tweet), so the next tick retries from here.
           logger.warn(`x-mentions: reply post failed (${res.status}): ${res.error}`);
+          diag = `post_failed @${m.id}: ${res.status} ${String(res.error).slice(0, 200)}`;
           break;
         }
       }
@@ -169,7 +172,7 @@ export const xMentions = inngest.createFunction(
           .update({ since_id: cursorTo, updated_at: new Date().toISOString() })
           .eq('id', 1);
       }
-      return { replied, skipped };
+      return { replied, skipped, fetched: ordered.length, ...(diag ? { diag } : {}) };
     });
 
     return result;
